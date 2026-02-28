@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import sys
 import numpy as np
 import sounddevice as sd
 
-from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QSettings, QThread, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import QTabBar
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -16,27 +18,34 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QProgressDialog,
     QPushButton,
+    QInputDialog,
+    QMenu,
     QSlider,
     QSpinBox,
     QSplitter,
     QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
     QMessageBox,
+    QListWidgetItem,
 )
 
 from daw.audio import AudioEngine
-from daw.dialogs import AddTrackDialog, RoleInstrumentDialog
+from daw.dialogs import AddTrackDialog, HelpDialog, RoleInstrumentDialog, ShortcutSettingsDialog
 from daw.exporter import export_wav
 from daw.models import NoteEvent, Project, Track
 from daw.pianoroll import PianoRollEditor, midi_name
+from daw.project_io import ProjectFormatError, load_kokestudio_file, save_kokestudio_file
 from daw.transcriber import audio_to_multitrack_events, load_audio, TranscriptionCancelled
+from daw.instruments import INSTRUMENT_LIBRARY
 
 
 APP_QSS = """
 QMainWindow, QWidget { background: #101010; color: #e7e7e7; font-family: Segoe UI; }
 QPushButton { background: #1f1f1f; border: 1px solid #343434; border-radius: 6px; padding: 6px 10px; }
 QPushButton:hover { border-color: #00ffc8; color: #00ffc8; }
+QPushButton:checked { border-color: #00ffc8; color: #00ffc8; }
 QListWidget { background: #121212; border: 1px solid #2a2a2a; border-radius: 6px; }
 QFrame#panel { background: #111111; border: 1px solid #292929; border-radius: 8px; }
 QLabel#title { color: #00ffc8; font-size: 20px; font-weight: 700; }
@@ -154,6 +163,11 @@ class MainWindow(QMainWindow):
         self._import_worker: AudioImportWorker | None = None
         self._import_progress_dialog: QProgressDialog | None = None
         self._import_source_label = ""
+        self._play_start_tick = 0
+        self._project_file_path: str | None = None
+        self._settings_store = QSettings("CodeKokeshi", "Koke16BitStudio")
+        self._recent_projects: list[str] = self._settings_store.value("recentProjects", [], list) or []
+        self._recent_projects = [path for path in self._recent_projects if isinstance(path, str) and path.strip()]
 
         self._build_ui()
         self._wire_signals()
@@ -170,28 +184,77 @@ class MainWindow(QMainWindow):
         # Header
         header = QFrame()
         header.setObjectName("panel")
-        h = QHBoxLayout(header)
-        h.setContentsMargins(12, 10, 12, 10)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(12, 10, 12, 10)
+        header_layout.setSpacing(8)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(8)
 
         title = QLabel("Koke16-Bit Studio")
         title.setObjectName("title")
-        h.addWidget(title)
+        top_row.addWidget(title)
 
-        h.addStretch(1)
+        top_row.addStretch(1)
 
-        self.btn_add_track = QPushButton("+ Add Piano Roll Track")
+        self.btn_tab_file = QPushButton("File")
+        self.btn_tab_file.setCheckable(True)
+        self.btn_tab_studio = QPushButton("Studio")
+        self.btn_tab_studio.setCheckable(True)
+        self.btn_settings = QPushButton("Settings")
+        self.btn_help = QPushButton("Help")
+
+        top_row.addWidget(self.btn_tab_file)
+        top_row.addWidget(self.btn_tab_studio)
+        top_row.addWidget(self.btn_settings)
+        top_row.addWidget(self.btn_help)
+
+        header_layout.addLayout(top_row)
+
+        toolbar_row = QHBoxLayout()
+        toolbar_row.setContentsMargins(0, 0, 0, 0)
+        toolbar_row.setSpacing(0)
+        toolbar_row.addStretch(1)
+
+        self.toolbar_stack = QStackedWidget()
+        toolbar_row.addWidget(self.toolbar_stack, 0, Qt.AlignmentFlag.AlignCenter)
+
+        toolbar_row.addStretch(1)
+        header_layout.addLayout(toolbar_row)
+
+        file_toolbar = QWidget()
+        file_toolbar_layout = QHBoxLayout(file_toolbar)
+        file_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        file_toolbar_layout.setSpacing(8)
+
         self.btn_hum_music = QPushButton("🎙 Hum → Music")
+        self.btn_open_recent = QPushButton("🕘 Open Recent")
         self.btn_import_music = QPushButton("📁 Import Audio → Music")
-        self.btn_play = QPushButton("▶ Play")
-        self.btn_stop = QPushButton("■ Stop")
+        self.btn_load_project = QPushButton("📂 Load Project")
+        self.btn_save_project = QPushButton("💾 Save Project")
         self.btn_export = QPushButton("💾 Export WAV")
 
-        h.addWidget(self.btn_add_track)
-        h.addWidget(self.btn_hum_music)
-        h.addWidget(self.btn_import_music)
-        h.addWidget(self.btn_play)
-        h.addWidget(self.btn_stop)
-        h.addWidget(self.btn_export)
+        file_toolbar_layout.addWidget(self.btn_open_recent)
+        file_toolbar_layout.addWidget(self.btn_load_project)
+        file_toolbar_layout.addWidget(self.btn_save_project)
+        file_toolbar_layout.addWidget(self.btn_import_music)
+        file_toolbar_layout.addWidget(self.btn_hum_music)
+        file_toolbar_layout.addWidget(self.btn_export)
+
+        studio_toolbar = QWidget()
+        studio_toolbar_layout = QHBoxLayout(studio_toolbar)
+        studio_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        studio_toolbar_layout.setSpacing(8)
+
+        self.btn_add_track = QPushButton("+ Add Piano Roll Track")
+        self.btn_play_all = QPushButton("▶ Play All Tracks")
+        self.btn_play_this = QPushButton("▷ Play This Track")
+        self.btn_stop = QPushButton("■ Stop")
+        studio_toolbar_layout.addWidget(self.btn_add_track)
+        studio_toolbar_layout.addWidget(self.btn_play_all)
+        studio_toolbar_layout.addWidget(self.btn_play_this)
+        studio_toolbar_layout.addWidget(self.btn_stop)
 
         bpm_label = QLabel("BPM")
         self.spin_bpm = QSpinBox()
@@ -199,12 +262,12 @@ class MainWindow(QMainWindow):
         self.spin_bpm.setValue(self.project.bpm)
         self.spin_bpm.setFixedWidth(74)
 
-        h.addSpacing(10)
-        h.addWidget(bpm_label)
-        h.addWidget(self.spin_bpm)
+        studio_toolbar_layout.addSpacing(10)
+        studio_toolbar_layout.addWidget(bpm_label)
+        studio_toolbar_layout.addWidget(self.spin_bpm)
 
-        h.addSpacing(12)
-        h.addWidget(QLabel("Loop"))
+        studio_toolbar_layout.addSpacing(12)
+        studio_toolbar_layout.addWidget(QLabel("Loop"))
         self.combo_loop_mode = QComboBox()
         self.combo_loop_mode.addItems([
             "Dynamic (All Tracks)",
@@ -212,15 +275,19 @@ class MainWindow(QMainWindow):
             "Custom Length",
         ])
         self.combo_loop_mode.setCurrentIndex(0)
-        h.addWidget(self.combo_loop_mode)
+        studio_toolbar_layout.addWidget(self.combo_loop_mode)
 
         self.spin_loop_beats = QSpinBox()
         self.spin_loop_beats.setRange(1, 128)
         self.spin_loop_beats.setValue(16)
         self.spin_loop_beats.setFixedWidth(74)
         self.spin_loop_beats.setEnabled(False)
-        h.addWidget(QLabel("Bars"))
-        h.addWidget(self.spin_loop_beats)
+        studio_toolbar_layout.addWidget(QLabel("Bars"))
+        studio_toolbar_layout.addWidget(self.spin_loop_beats)
+
+        self.toolbar_stack.addWidget(file_toolbar)
+        self.toolbar_stack.addWidget(studio_toolbar)
+        self._set_toolbar_mode("studio")
 
         main.addWidget(header)
 
@@ -236,6 +303,7 @@ class MainWindow(QMainWindow):
 
         left_l.addWidget(QLabel("Tracks"))
         self.list_tracks = QListWidget()
+        self.list_tracks.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         left_l.addWidget(self.list_tracks, 1)
 
         self.track_volume = QSlider(Qt.Orientation.Horizontal)
@@ -251,6 +319,10 @@ class MainWindow(QMainWindow):
         center.setObjectName("panel")
         center_l = QVBoxLayout(center)
         center_l.setContentsMargins(8, 8, 8, 8)
+        center_l.setSpacing(6)
+
+        self.center_tabs = QTabWidget()
+        self.center_tabs.setTabsClosable(True)
 
         self.center_stack = QStackedWidget()
 
@@ -264,7 +336,18 @@ class MainWindow(QMainWindow):
         self.editor = PianoRollEditor()
         self.center_stack.addWidget(self.editor)
 
-        center_l.addWidget(self.center_stack)
+        self.recent_page = QWidget()
+        recent_layout = QVBoxLayout(self.recent_page)
+        recent_layout.setContentsMargins(10, 10, 10, 10)
+        recent_layout.setSpacing(8)
+        recent_layout.addWidget(QLabel("Recent Projects"))
+        self.list_recent_projects = QListWidget()
+        recent_layout.addWidget(self.list_recent_projects, 1)
+
+        self.center_tabs.addTab(self.recent_page, "Recent Projects")
+        self.center_tabs.addTab(self.center_stack, "Canvas")
+        self._update_center_tab_close_buttons()
+        center_l.addWidget(self.center_tabs)
         splitter.addWidget(center)
 
         # Right panel: note inspector
@@ -315,10 +398,19 @@ class MainWindow(QMainWindow):
         self.status.showMessage("Ready. Add a track to start composing.")
 
     def _wire_signals(self):
+        self.btn_tab_file.clicked.connect(lambda: self._set_toolbar_mode("file"))
+        self.btn_tab_studio.clicked.connect(lambda: self._set_toolbar_mode("studio"))
+        self.btn_settings.clicked.connect(self._open_settings)
+        self.btn_help.clicked.connect(self._open_help)
+
         self.btn_add_track.clicked.connect(self._on_add_track)
+        self.btn_open_recent.clicked.connect(self._on_open_recent_page)
         self.btn_hum_music.clicked.connect(self._on_hum_music)
+        self.btn_load_project.clicked.connect(self._on_load_project)
+        self.btn_save_project.clicked.connect(self._on_save_project)
         self.btn_import_music.clicked.connect(self._on_import_audio_music)
-        self.btn_play.clicked.connect(self._on_play)
+        self.btn_play_all.clicked.connect(self._on_play_all)
+        self.btn_play_this.clicked.connect(self._on_play_this)
         self.btn_stop.clicked.connect(self._on_stop)
         self.btn_export.clicked.connect(self._on_export_wav)
         self.spin_bpm.valueChanged.connect(self._on_bpm_changed)
@@ -326,15 +418,198 @@ class MainWindow(QMainWindow):
         self.spin_loop_beats.valueChanged.connect(self._on_loop_beats_changed)
 
         self.list_tracks.currentRowChanged.connect(self._on_track_selected)
+        self.list_tracks.customContextMenuRequested.connect(self._on_tracks_context_menu)
         self.track_volume.valueChanged.connect(self._on_track_volume_changed)
 
         self.editor.note_selected.connect(self._on_note_selected)
         self.editor.note_audition.connect(self._on_note_audition)
+        self.editor.start_tick_changed.connect(self._on_start_tick_changed)
+        self.list_recent_projects.itemDoubleClicked.connect(self._on_recent_project_activated)
+        self.center_tabs.tabCloseRequested.connect(self._on_center_tab_close_requested)
 
         self.spin_velocity.valueChanged.connect(self._on_velocity_changed)
         self.spin_length.valueChanged.connect(self._on_length_changed)
 
         self.audio.position_changed.connect(self.editor.set_playhead)
+        self._refresh_recent_projects_view()
+
+    def _set_toolbar_mode(self, mode: str):
+        is_file = mode == "file"
+        self.btn_tab_file.setChecked(is_file)
+        self.btn_tab_studio.setChecked(not is_file)
+        self.toolbar_stack.setCurrentIndex(0 if is_file else 1)
+
+    def _open_settings(self):
+        dialog = ShortcutSettingsDialog(self.editor.shortcut_config(), self)
+        dialog.setModal(True)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            self.editor.set_shortcut_config(dialog.shortcut_config())
+            self.status.showMessage("Shortcut settings updated.", 2000)
+
+    def _open_help(self):
+        dialog = HelpDialog(self.editor.shortcut_config(), self)
+        dialog.setModal(True)
+        dialog.exec()
+
+    def _collect_session_state(self) -> dict:
+        return {
+            "play_start_tick": int(self._play_start_tick),
+            "editor": self.editor.view_state(),
+        }
+
+    def _save_recent_projects_setting(self):
+        self._settings_store.setValue("recentProjects", self._recent_projects)
+
+    def _push_recent_project(self, path: str):
+        norm = os.path.normpath(path)
+        self._recent_projects = [p for p in self._recent_projects if os.path.normpath(p) != norm]
+        self._recent_projects.insert(0, path)
+        self._recent_projects = self._recent_projects[:20]
+        self._save_recent_projects_setting()
+        self._refresh_recent_projects_view()
+
+    def _refresh_recent_projects_view(self):
+        self.list_recent_projects.clear()
+        filtered = []
+        for path in self._recent_projects:
+            if os.path.exists(path):
+                filtered.append(path)
+        if filtered != self._recent_projects:
+            self._recent_projects = filtered
+            self._save_recent_projects_setting()
+
+        for path in self._recent_projects:
+            item = QListWidgetItem(os.path.basename(path) or path)
+            item.setToolTip(path)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.list_recent_projects.addItem(item)
+
+        if not self._recent_projects:
+            item = QListWidgetItem("No recent projects yet.")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.list_recent_projects.addItem(item)
+
+    def _has_recent_tab(self) -> bool:
+        for idx in range(self.center_tabs.count()):
+            if self.center_tabs.widget(idx) is self.recent_page:
+                return True
+        return False
+
+    def _update_center_tab_close_buttons(self):
+        tab_bar = self.center_tabs.tabBar()
+        self.center_tabs.setTabsClosable(False)
+        self.center_tabs.setTabsClosable(True)
+        for idx in range(self.center_tabs.count()):
+            widget = self.center_tabs.widget(idx)
+            show_close = widget is self.recent_page
+            side = QTabBar.ButtonPosition.RightSide
+            if not show_close:
+                tab_bar.setTabButton(idx, side, None)
+
+    def _show_recent_tab(self):
+        if not self._has_recent_tab():
+            self.center_tabs.insertTab(0, self.recent_page, "Recent Projects")
+            self._update_center_tab_close_buttons()
+        self.center_tabs.setCurrentWidget(self.recent_page)
+
+    def _on_open_recent_page(self):
+        self._refresh_recent_projects_view()
+        self._show_recent_tab()
+
+    def _on_recent_project_activated(self, item):
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        self._load_project_from_path(path)
+
+    def _on_center_tab_close_requested(self, index: int):
+        widget = self.center_tabs.widget(index)
+        if widget is self.recent_page:
+            self.center_tabs.removeTab(index)
+            self._update_center_tab_close_buttons()
+
+    def _apply_loaded_state(self, loaded: dict):
+        if self.audio.playing:
+            self.audio.stop()
+
+        self.project = loaded["project"]
+        self.audio.project = self.project
+
+        self.spin_bpm.blockSignals(True)
+        self.spin_bpm.setValue(self.project.bpm)
+        self.spin_bpm.blockSignals(False)
+
+        loop_mode = self.project.loop_mode
+        mode_index = 0 if loop_mode == "dynamic" else 1 if loop_mode == "timeline" else 2
+        self.combo_loop_mode.blockSignals(True)
+        self.combo_loop_mode.setCurrentIndex(mode_index)
+        self.combo_loop_mode.blockSignals(False)
+
+        bars = max(1, int(self.project.custom_loop_ticks / (self.project.ticks_per_beat * 4)))
+        self.spin_loop_beats.blockSignals(True)
+        self.spin_loop_beats.setValue(bars)
+        self.spin_loop_beats.blockSignals(False)
+        self.spin_loop_beats.setEnabled(loop_mode == "custom")
+
+        session_state = loaded.get("session_state", {})
+        self._play_start_tick = int(session_state.get("play_start_tick", 0))
+        self.editor.set_start_tick(self._play_start_tick)
+
+        self._refresh_track_list()
+        if 0 <= self.project.selected_track_index < len(self.project.tracks):
+            self.list_tracks.setCurrentRow(self.project.selected_track_index)
+        else:
+            self.list_tracks.setCurrentRow(-1)
+
+        editor_state = session_state.get("editor", {})
+        self.editor.apply_view_state(editor_state)
+
+    def _load_project_from_path(self, path: str):
+        try:
+            loaded = load_kokestudio_file(path)
+            self._apply_loaded_state(loaded)
+            self._project_file_path = path
+            self._push_recent_project(path)
+            self.status.showMessage(f"Project loaded: {path}", 3500)
+        except ProjectFormatError as exc:
+            QMessageBox.warning(self, "Load Failed", f"Invalid project file:\n{exc}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Load Failed", f"Could not load project:\n{exc}")
+
+    def _on_save_project(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Project",
+            self._project_file_path or "",
+            "KokeStudio Project (*.kokestudio)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".kokestudio"):
+            path += ".kokestudio"
+
+        try:
+            save_kokestudio_file(
+                path,
+                self.project,
+                self._collect_session_state(),
+            )
+            self._project_file_path = path
+            self._push_recent_project(path)
+            self.status.showMessage(f"Project saved: {path}", 3000)
+        except Exception as exc:
+            QMessageBox.warning(self, "Save Failed", f"Could not save project:\n{exc}")
+
+    def _on_load_project(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Project",
+            self._project_file_path or "",
+            "KokeStudio Project (*.kokestudio)",
+        )
+        if not path:
+            return
+        self._load_project_from_path(path)
 
     def _on_add_track(self):
         dialog = AddTrackDialog(self)
@@ -539,8 +814,11 @@ class MainWindow(QMainWindow):
     def _set_import_controls_enabled(self, enabled: bool):
         self.btn_add_track.setEnabled(enabled)
         self.btn_hum_music.setEnabled(enabled)
+        self.btn_load_project.setEnabled(enabled)
+        self.btn_save_project.setEnabled(enabled)
         self.btn_import_music.setEnabled(enabled)
-        self.btn_play.setEnabled(enabled)
+        self.btn_play_all.setEnabled(enabled)
+        self.btn_play_this.setEnabled(enabled)
         self.btn_stop.setEnabled(enabled)
 
     def _finalize_audio_to_music(self, split: dict[str, list[NoteEvent]], source_label: str):
@@ -611,7 +889,15 @@ class MainWindow(QMainWindow):
             self.list_tracks.addItem(f"{track.name}  [{track.instrument_name}]")
 
         has_tracks = len(self.project.tracks) > 0
+        self.btn_save_project.setEnabled(has_tracks)
         self.center_stack.setCurrentIndex(1 if has_tracks else 0)
+        if has_tracks:
+            self.center_tabs.setCurrentWidget(self.center_stack)
+        else:
+            if self._has_recent_tab():
+                self.center_tabs.setCurrentWidget(self.recent_page)
+            else:
+                self.center_tabs.setCurrentWidget(self.center_stack)
 
     def _on_track_selected(self, row: int):
         if row < 0 or row >= len(self.project.tracks):
@@ -685,16 +971,113 @@ class MainWindow(QMainWindow):
         if self.project.loop_mode == "custom":
             self.status.showMessage(f"Loop mode: Custom ({bars} bars)", 2000)
 
-    def _on_play(self):
+    def _on_start_tick_changed(self, tick: int):
+        self._play_start_tick = tick
+        if not self.audio.playing:
+            self.editor.set_playhead(tick)
+        self.status.showMessage(f"Start Here set to tick {tick}", 1500)
+
+    def _on_play_all(self):
         if not self.project.tracks:
             self.status.showMessage("Add at least one track first.", 2000)
             return
-        self.audio.start()
-        self.status.showMessage("Playback started", 1500)
+        self.audio.start(solo_track_index=None, start_tick=self._play_start_tick)
+        self.status.showMessage("Playback started: all tracks", 1500)
+
+    def _on_play_this(self):
+        row = self.list_tracks.currentRow()
+        if row < 0 or row >= len(self.project.tracks):
+            self.status.showMessage("Select a track first.", 2000)
+            return
+        self.audio.start(solo_track_index=row, start_tick=self._play_start_tick)
+        self.status.showMessage(f"Playback started: {self.project.tracks[row].name}", 1500)
 
     def _on_stop(self):
         self.audio.stop()
         self.status.showMessage("Playback stopped", 1500)
+
+    def _on_tracks_context_menu(self, pos):
+        row = self.list_tracks.indexAt(pos).row()
+        if row < 0 or row >= len(self.project.tracks):
+            return
+
+        self.list_tracks.setCurrentRow(row)
+
+        menu = QMenu(self)
+        action_delete = menu.addAction("Delete Track")
+        action_change_inst = menu.addAction("Change Instrument")
+        chosen = menu.exec(self.list_tracks.mapToGlobal(pos))
+
+        if chosen == action_delete:
+            self._on_delete_selected_track()
+        elif chosen == action_change_inst:
+            self._on_change_instrument_selected_track()
+
+    def _on_delete_selected_track(self):
+        row = self.list_tracks.currentRow()
+        if row < 0 or row >= len(self.project.tracks):
+            return
+
+        track = self.project.tracks[row]
+        answer = QMessageBox.question(
+            self,
+            "Delete Track",
+            f"Delete track '{track.name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        if self.audio.playing:
+            self.audio.stop()
+
+        del self.project.tracks[row]
+
+        if not self.project.tracks:
+            self.project.selected_track_index = -1
+            self._refresh_track_list()
+            self.status.showMessage("Track deleted.", 2000)
+            return
+
+        new_row = min(row, len(self.project.tracks) - 1)
+        self.project.selected_track_index = new_row
+        self._refresh_track_list()
+        self.list_tracks.setCurrentRow(new_row)
+        self.status.showMessage("Track deleted.", 2000)
+
+    def _on_change_instrument_selected_track(self):
+        row = self.list_tracks.currentRow()
+        if row < 0 or row >= len(self.project.tracks):
+            return
+
+        track = self.project.tracks[row]
+        labels = [f"{inst['name']}  ·  {inst['family']}" for inst in INSTRUMENT_LIBRARY]
+        current_index = 0
+        for idx, inst in enumerate(INSTRUMENT_LIBRARY):
+            if inst["name"] == track.instrument_name:
+                current_index = idx
+                break
+
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Change Instrument",
+            f"Choose instrument for '{track.name}':",
+            labels,
+            current_index,
+            False,
+        )
+        if not ok:
+            return
+
+        selected_index = labels.index(choice)
+        selected = INSTRUMENT_LIBRARY[selected_index]
+        track.instrument_name = selected["name"]
+        track.waveform = selected["waveform"]
+
+        self._refresh_track_list()
+        self.list_tracks.setCurrentRow(row)
+        self.status.showMessage(f"Instrument changed: {track.name} → {track.instrument_name}", 2500)
 
     # ── Export WAV ──────────────────────────────────────────────────
 
@@ -709,7 +1092,6 @@ class MainWindow(QMainWindow):
             self.audio.stop()
 
         # Ask how many loops
-        from PyQt6.QtWidgets import QInputDialog
         loops, ok = QInputDialog.getInt(
             self, "Export — Loop Count",
             "How many loops to render?\n"

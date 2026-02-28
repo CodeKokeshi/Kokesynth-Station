@@ -1,20 +1,32 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QRadioButton,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from daw.instruments import INSTRUMENT_LIBRARY
+from daw.shortcuts import (
+    KeyBinding,
+    ShortcutConfig,
+    chord_to_binding,
+    key_to_text,
+    modifier_from_key,
+    modifier_to_text,
+)
 
 
 class AddTrackDialog(QDialog):
@@ -182,3 +194,381 @@ class RoleInstrumentDialog(QDialog):
         if item is None:
             return None
         return item.data(Qt.ItemDataRole.UserRole)
+
+
+class ListeningField(QLineEdit):
+    clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFixedWidth(200)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        self.setFocus()
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class ShortcutSettingsDialog(QDialog):
+    def __init__(self, config: ShortcutConfig, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.resize(640, 460)
+        self._config = ShortcutConfig(
+            modifier=config.modifier,
+            controller=config.controller,
+            box_select=KeyBinding(config.box_select.modifiers, config.box_select.key),
+            zoom=KeyBinding(config.zoom.modifiers, config.zoom.key),
+            undo=KeyBinding(config.undo.modifiers, config.undo.key),
+            redo_primary=KeyBinding(config.redo_primary.modifiers, config.redo_primary.key),
+            redo_secondary=KeyBinding(config.redo_secondary.modifiers, config.redo_secondary.key),
+            select_all_notes=KeyBinding(config.select_all_notes.modifiers, config.select_all_notes.key),
+            delete_primary=KeyBinding(config.delete_primary.modifiers, config.delete_primary.key),
+            delete_secondary=KeyBinding(config.delete_secondary.modifiers, config.delete_secondary.key),
+        )
+        self._active_field_name: str | None = None
+        self._active_field: ListeningField | None = None
+        self._captured_keys: list[int] = []
+        self._pressed_keys: set[int] = set()
+        self._capture_started = False
+        self._listen_seconds = 0
+
+        self._listen_timer = QTimer(self)
+        self._listen_timer.setInterval(1000)
+        self._listen_timer.timeout.connect(self._on_listen_tick)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        title = QLabel("Shortcut Controls")
+        title.setStyleSheet("font-size: 15px; font-weight: 700;")
+        root.addWidget(title)
+
+        self.lbl_hint = QLabel("Click a field to listen for 3 seconds. Capture ends when all pressed keys are released.")
+        self.lbl_hint.setStyleSheet("color:#8f8f8f;")
+        root.addWidget(self.lbl_hint)
+
+        rows_root = QVBoxLayout()
+        rows_root.setSpacing(8)
+        root.addLayout(rows_root, 1)
+
+        rows_grid = QGridLayout()
+        rows_grid.setHorizontalSpacing(10)
+        rows_grid.setVerticalSpacing(8)
+        rows_grid.setColumnMinimumWidth(0, 130)
+        rows_grid.setColumnMinimumWidth(1, 200)
+        rows_grid.setColumnMinimumWidth(2, 170)
+        rows_grid.setColumnStretch(2, 1)
+        rows_root.addLayout(rows_grid)
+
+        self.f_modifier = ListeningField()
+        self.f_box_select = ListeningField()
+        self.f_zoom = ListeningField()
+        self.f_controller = ListeningField()
+        self.f_undo = ListeningField()
+        self.f_redo_primary = ListeningField()
+        self.f_redo_secondary = ListeningField()
+        self.f_select_all = ListeningField()
+        self.f_delete_primary = ListeningField()
+        self.f_delete_secondary = ListeningField()
+
+        self.lbl_box_select = QLabel("+ Left Click Drag")
+        self.lbl_zoom = QLabel("+ Scroll / Mouse Wheel")
+
+        self._add_settings_row(rows_grid, 0, "Modifier", self.f_modifier, "")
+        self._add_settings_row(rows_grid, 1, "Box Select Notes", self.f_box_select, "+ Left Click Drag")
+        self._add_settings_row(rows_grid, 2, "Zoom Piano Roll", self.f_zoom, "+ Scroll / Mouse Wheel")
+        self._add_settings_row(rows_grid, 3, "Controller", self.f_controller, "")
+        self._add_settings_row(rows_grid, 4, "Undo", self.f_undo, "")
+        self._add_settings_row(rows_grid, 5, "Redo (Primary)", self.f_redo_primary, "")
+        self._add_settings_row(rows_grid, 6, "Redo (Alternate)", self.f_redo_secondary, "")
+        self._add_settings_row(rows_grid, 7, "Select All Notes", self.f_select_all, "")
+        self._add_settings_row(rows_grid, 8, "Delete Notes", self.f_delete_primary, "")
+        self._add_settings_row(rows_grid, 9, "Delete Notes (Alt)", self.f_delete_secondary, "")
+        rows_root.addStretch(1)
+
+        self.f_modifier.clicked.connect(lambda: self._begin_listen("modifier", self.f_modifier))
+        self.f_box_select.clicked.connect(lambda: self._begin_listen("box_select", self.f_box_select))
+        self.f_zoom.clicked.connect(lambda: self._begin_listen("zoom", self.f_zoom))
+        self.f_controller.clicked.connect(lambda: self._begin_listen("controller", self.f_controller))
+        self.f_undo.clicked.connect(lambda: self._begin_listen("undo", self.f_undo))
+        self.f_redo_primary.clicked.connect(lambda: self._begin_listen("redo_primary", self.f_redo_primary))
+        self.f_redo_secondary.clicked.connect(lambda: self._begin_listen("redo_secondary", self.f_redo_secondary))
+        self.f_select_all.clicked.connect(lambda: self._begin_listen("select_all_notes", self.f_select_all))
+        self.f_delete_primary.clicked.connect(lambda: self._begin_listen("delete_primary", self.f_delete_primary))
+        self.f_delete_secondary.clicked.connect(lambda: self._begin_listen("delete_secondary", self.f_delete_secondary))
+
+        self._refresh_labels()
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+    def shortcut_config(self) -> ShortcutConfig:
+        return ShortcutConfig(
+            modifier=self._config.modifier,
+            controller=self._config.controller,
+            box_select=KeyBinding(self._config.box_select.modifiers, self._config.box_select.key),
+            zoom=KeyBinding(self._config.zoom.modifiers, self._config.zoom.key),
+            undo=KeyBinding(self._config.undo.modifiers, self._config.undo.key),
+            redo_primary=KeyBinding(self._config.redo_primary.modifiers, self._config.redo_primary.key),
+            redo_secondary=KeyBinding(self._config.redo_secondary.modifiers, self._config.redo_secondary.key),
+            select_all_notes=KeyBinding(self._config.select_all_notes.modifiers, self._config.select_all_notes.key),
+            delete_primary=KeyBinding(self._config.delete_primary.modifiers, self._config.delete_primary.key),
+            delete_secondary=KeyBinding(self._config.delete_secondary.modifiers, self._config.delete_secondary.key),
+        )
+
+    def _add_settings_row(self, grid: QGridLayout, row: int, name: str, control: QWidget, suffix: str):
+        lbl_name = QLabel(name)
+        lbl_suffix = QLabel(suffix)
+        lbl_suffix.setStyleSheet("color:#e7e7e7;")
+
+        grid.addWidget(lbl_name, row, 0)
+        grid.addWidget(control, row, 1)
+        grid.addWidget(lbl_suffix, row, 2)
+
+    def _field_with_tail(self, field: ListeningField, tail_label: QLabel) -> QWidget:
+        host = QWidget()
+        row = QHBoxLayout(host)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(field)
+        row.addWidget(tail_label)
+        return host
+
+    def _begin_listen(self, field_name: str, field: ListeningField):
+        if self._active_field is field and self._listen_timer.isActive():
+            return
+        self._cancel_listen()
+        self._active_field_name = field_name
+        self._active_field = field
+        self._captured_keys = []
+        self._pressed_keys = set()
+        self._capture_started = False
+        self._listen_seconds = 3
+        self._active_field.setText("Listening… 3")
+        self._listen_timer.start()
+        self.grabKeyboard()
+
+    def _on_listen_tick(self):
+        if self._active_field is None:
+            self._cancel_listen()
+            return
+        if self._capture_started:
+            return
+        self._listen_seconds -= 1
+        if self._listen_seconds <= 0:
+            self._cancel_listen()
+            self._refresh_labels()
+            return
+        self._active_field.setText(f"Listening… {self._listen_seconds}")
+
+    def _cancel_listen(self):
+        if self._listen_timer.isActive():
+            self._listen_timer.stop()
+        self._active_field_name = None
+        self._active_field = None
+        self._captured_keys = []
+        self._pressed_keys = set()
+        self._capture_started = False
+        try:
+            self.releaseKeyboard()
+        except Exception:
+            pass
+
+    def keyPressEvent(self, event):  # noqa: N802
+        if self._active_field_name is None:
+            super().keyPressEvent(event)
+            return
+        key = int(event.key())
+
+        if key not in self._captured_keys and len(self._captured_keys) < 4:
+            self._captured_keys.append(key)
+        self._pressed_keys.add(key)
+        self._capture_started = True
+        if self._listen_timer.isActive():
+            self._listen_timer.stop()
+
+        if self._active_field is not None:
+            self._active_field.setText(self._keys_to_text(self._captured_keys) + "  (release to apply)")
+        event.accept()
+
+    def keyReleaseEvent(self, event):  # noqa: N802
+        if self._active_field_name is None:
+            super().keyReleaseEvent(event)
+            return
+        key = int(event.key())
+        self._pressed_keys.discard(key)
+        if self._capture_started and not self._pressed_keys:
+            self._apply_captured_keys()
+            self._cancel_listen()
+            self._refresh_labels()
+        event.accept()
+
+    def _keys_to_text(self, keys: list[int]) -> str:
+        if not keys:
+            return "None"
+        return " + ".join(key_to_text(k) for k in keys)
+
+    def _modifiers_from_keys(self, keys: list[int]) -> Qt.KeyboardModifier:
+        mods = Qt.KeyboardModifier.NoModifier
+        for key in keys:
+            mod = modifier_from_key(key)
+            if mod is not None:
+                mods |= mod
+        return mods
+
+    def _apply_captured_keys(self):
+        if not self._captured_keys or self._active_field_name is None:
+            return
+
+        name = self._active_field_name
+        if name in ("modifier", "controller"):
+            mods = self._modifiers_from_keys(self._captured_keys)
+            if mods != Qt.KeyboardModifier.NoModifier:
+                setattr(self._config, name, mods)
+            return
+
+        binding = chord_to_binding(self._captured_keys)
+        if name in ("box_select", "zoom"):
+            if binding.modifiers == Qt.KeyboardModifier.NoModifier and binding.key == int(Qt.Key.Key_unknown):
+                return
+            setattr(self._config, name, binding)
+            return
+
+        if binding.key == int(Qt.Key.Key_unknown):
+            return
+        setattr(self._config, name, binding)
+
+    def _format_binding_symbolic(self, binding: KeyBinding) -> str:
+        parts = []
+        if binding.modifiers == self._config.controller and binding.modifiers != Qt.KeyboardModifier.NoModifier:
+            parts.append("CONTROLLER")
+        elif binding.modifiers == self._config.modifier and binding.modifiers != Qt.KeyboardModifier.NoModifier:
+            parts.append("MODIFIER")
+        elif (
+            binding.modifiers == (self._config.controller | self._config.modifier)
+            and self._config.controller != Qt.KeyboardModifier.NoModifier
+            and self._config.modifier != Qt.KeyboardModifier.NoModifier
+        ):
+            parts.extend(["CONTROLLER", "MODIFIER"])
+        else:
+            mod_text = modifier_to_text(binding.modifiers)
+            if mod_text != "None":
+                parts.append(mod_text)
+
+        if binding.key != int(Qt.Key.Key_unknown):
+            parts.append(key_to_text(binding.key))
+
+        return " + ".join(parts) if parts else "None"
+
+    def _refresh_labels(self):
+        if self._active_field_name is None:
+            self._set_field_text(self.f_modifier, modifier_to_text(self._config.modifier))
+            self._set_field_text(self.f_box_select, self._format_binding_symbolic(self._config.box_select))
+            self._set_field_text(self.f_zoom, self._format_binding_symbolic(self._config.zoom))
+            self._set_field_text(self.f_controller, modifier_to_text(self._config.controller))
+            self._set_field_text(self.f_undo, self._format_binding_symbolic(self._config.undo))
+            self._set_field_text(self.f_redo_primary, self._format_binding_symbolic(self._config.redo_primary))
+            self._set_field_text(self.f_redo_secondary, self._format_binding_symbolic(self._config.redo_secondary))
+            self._set_field_text(self.f_select_all, self._format_binding_symbolic(self._config.select_all_notes))
+            self._set_field_text(self.f_delete_primary, self._format_binding_symbolic(self._config.delete_primary))
+            self._set_field_text(self.f_delete_secondary, self._format_binding_symbolic(self._config.delete_secondary))
+
+    def _set_field_text(self, field: ListeningField, text: str):
+        field.setText(text)
+        field.setCursorPosition(0)
+
+
+class HelpDialog(QDialog):
+    def __init__(self, config: ShortcutConfig, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Help")
+        self.resize(560, 420)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        tabs = QTabWidget()
+        root.addWidget(tabs, 1)
+
+        shortcuts_tab = QWidget()
+        shortcuts_layout = QVBoxLayout(shortcuts_tab)
+        shortcuts_layout.setContentsMargins(10, 10, 10, 10)
+        shortcuts_layout.setSpacing(8)
+
+        title = QLabel("Shortcuts")
+        title.setStyleSheet("font-size: 15px; font-weight: 700;")
+        shortcuts_layout.addWidget(title)
+
+        rows = [
+            ("Modifier", modifier_to_text(config.modifier)),
+            ("Box Select Notes", f"{self._fmt(config.box_select, config)} + Left Click Drag"),
+            ("Zoom Piano Roll", f"{self._fmt(config.zoom, config)} + Scroll / Mouse Wheel"),
+            ("Controller", modifier_to_text(config.controller)),
+            ("Undo", self._fmt(config.undo, config)),
+            ("Redo", f"{self._fmt(config.redo_primary, config)} / {self._fmt(config.redo_secondary, config)}"),
+            ("Select All Notes", self._fmt(config.select_all_notes, config)),
+            ("Delete Notes", f"{self._fmt(config.delete_primary, config)} / {self._fmt(config.delete_secondary, config)}"),
+        ]
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
+        grid.setColumnMinimumWidth(0, 150)
+        grid.setColumnMinimumWidth(1, 260)
+        grid.setColumnStretch(1, 1)
+
+        for index, (action, shortcut) in enumerate(rows):
+            lbl_action = QLabel(action)
+            lbl_shortcut = QLabel(shortcut)
+            lbl_shortcut.setStyleSheet("color:#00ffc8;")
+            grid.addWidget(lbl_action, index, 0)
+            grid.addWidget(lbl_shortcut, index, 1)
+
+        shortcuts_layout.addLayout(grid)
+
+        shortcuts_layout.addStretch(1)
+        tabs.addTab(shortcuts_tab, "Shortcuts")
+
+        about_tab = QWidget()
+        about_layout = QVBoxLayout(about_tab)
+        about_layout.setContentsMargins(10, 10, 10, 10)
+        about_layout.setSpacing(8)
+        lbl_about = QLabel("Developed by CodeKokeshi, February 2026")
+        lbl_about.setStyleSheet("font-size: 14px; color:#d7d7d7;")
+        about_layout.addWidget(lbl_about)
+        about_layout.addStretch(1)
+        tabs.addTab(about_tab, "About")
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(self.reject)
+        btns.accepted.connect(self.accept)
+        root.addWidget(btns)
+
+    def _fmt(self, binding: KeyBinding, config: ShortcutConfig) -> str:
+        parts = []
+        if binding.modifiers == config.controller and binding.modifiers != Qt.KeyboardModifier.NoModifier:
+            parts.append("CONTROLLER")
+        elif binding.modifiers == config.modifier and binding.modifiers != Qt.KeyboardModifier.NoModifier:
+            parts.append("MODIFIER")
+        elif (
+            binding.modifiers == (config.controller | config.modifier)
+            and config.controller != Qt.KeyboardModifier.NoModifier
+            and config.modifier != Qt.KeyboardModifier.NoModifier
+        ):
+            parts.extend(["CONTROLLER", "MODIFIER"])
+        else:
+            mod_text = modifier_to_text(binding.modifiers)
+            if mod_text != "None":
+                parts.append(mod_text)
+
+        if binding.key != int(Qt.Key.Key_unknown):
+            parts.append(key_to_text(binding.key))
+
+        return " + ".join(parts) if parts else "None"

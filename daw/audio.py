@@ -19,6 +19,8 @@ class AudioEngine(QObject):
         self.sample_rate = 44100
         self.current_tick = 0
         self.playing = False
+        self._solo_track_index: int | None = None
+        self._start_tick: int | None = None
         self._cache: dict[tuple[str, int, int], object] = {}
 
         self._timer = QTimer(self)
@@ -26,11 +28,12 @@ class AudioEngine(QObject):
 
         self.available = False
         try:
-            pygame.mixer.pre_init(self.sample_rate, -16, 1, 512)
-            pygame.mixer.init()
+            if not pygame.mixer.get_init():
+                pygame.mixer.pre_init(self.sample_rate, -16, 1, 512)
+                pygame.mixer.init()
             pygame.mixer.set_num_channels(32)
             self.available = True
-        except pygame.error:
+        except Exception:
             self.available = False
 
     def set_bpm(self, bpm: int) -> None:
@@ -38,22 +41,26 @@ class AudioEngine(QObject):
         if self.playing:
             self._timer.setInterval(self._tick_ms())
 
-    def start(self) -> None:
+    def start(self, solo_track_index: int | None = None, start_tick: int | None = None) -> None:
         if not self.available:
             return
-        loop_start, _ = self._loop_window()
+        self._solo_track_index = solo_track_index
+        self._start_tick = start_tick
+        loop_start, loop_end = self._loop_window()
         self.playing = True
-        self.current_tick = loop_start
+        self.current_tick = self._resolve_start_tick(loop_start, loop_end)
         self.position_changed.emit(self.current_tick)
         self._timer.start(self._tick_ms())
 
     def stop(self) -> None:
         self.playing = False
-        self.current_tick = self._loop_window()[0]
+        loop_start, loop_end = self._loop_window()
+        self.current_tick = self._resolve_start_tick(loop_start, loop_end)
         self.position_changed.emit(self.current_tick)
         self._timer.stop()
         if self.available:
             pygame.mixer.stop()
+        self._solo_track_index = None
 
     def preview_note(self, waveform: str, midi_note: int, velocity: int = 100) -> None:
         if not self.available:
@@ -70,7 +77,7 @@ class AudioEngine(QObject):
 
     def _tick(self) -> None:
         loop_start, loop_end = self._loop_window()
-        for track in self.project.tracks:
+        for track in self._playback_tracks():
             for note in track.notes:
                 if note.start_tick == self.current_tick:
                     dur = max(0.08, note.length_tick / self.project.ticks_per_beat * 60.0 / self.project.bpm)
@@ -87,7 +94,7 @@ class AudioEngine(QObject):
     def _dynamic_loop_window(self) -> tuple[int, int]:
         min_start = None
         max_end = 0
-        for track in self.project.tracks:
+        for track in self._playback_tracks():
             for note in track.notes:
                 if min_start is None:
                     min_start = note.start_tick
@@ -110,6 +117,20 @@ class AudioEngine(QObject):
         if self.project.loop_mode == "custom":
             return 0, max(1, self.project.custom_loop_ticks)
         return self._dynamic_loop_window()
+
+    def _resolve_start_tick(self, loop_start: int, loop_end: int) -> int:
+        if loop_end <= loop_start:
+            return loop_start
+        if self._start_tick is None:
+            return loop_start
+        return max(loop_start, min(loop_end - 1, self._start_tick))
+
+    def _playback_tracks(self) -> list:
+        if self._solo_track_index is None:
+            return self.project.tracks
+        if 0 <= self._solo_track_index < len(self.project.tracks):
+            return [self.project.tracks[self._solo_track_index]]
+        return []
 
     def _get_sound(self, waveform: str, midi_note: int, duration: float):
         """Return a cached Sound at full volume (volume applied via channel)."""
