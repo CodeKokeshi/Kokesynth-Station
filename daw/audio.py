@@ -19,6 +19,7 @@ class AudioEngine(QObject):
         self.sample_rate = 44100
         self.current_tick = 0
         self.playing = False
+        self.paused = False
         self._solo_track_index: int | None = None
         self._start_tick: int | None = None
         self._loop_cycle_index = 0
@@ -49,13 +50,37 @@ class AudioEngine(QObject):
         self._start_tick = start_tick
         loop_start, loop_end = self._loop_window()
         self.playing = True
+        self.paused = False
         self._loop_cycle_index = 0
         self.current_tick = self._resolve_start_tick(loop_start, loop_end)
         self.position_changed.emit(self.current_tick)
         self._timer.start(self._tick_ms())
 
+    def pause(self) -> None:
+        if not self.available or not self.playing:
+            return
+        self._timer.stop()
+        pygame.mixer.pause()
+        self.playing = False
+        self.paused = True
+
+    def resume(self) -> None:
+        if not self.available or not self.paused:
+            return
+        pygame.mixer.unpause()
+        self._timer.start(self._tick_ms())
+        self.playing = True
+        self.paused = False
+
+    def switch_playback_mode(self, solo_track_index: int | None) -> None:
+        """Switch between all-track and solo playback without moving current tick."""
+        self._solo_track_index = solo_track_index
+        if self.available:
+            pygame.mixer.stop()
+
     def stop(self) -> None:
         self.playing = False
+        self.paused = False
         loop_start, loop_end = self._loop_window()
         self.current_tick = self._resolve_start_tick(loop_start, loop_end)
         self.position_changed.emit(self.current_tick)

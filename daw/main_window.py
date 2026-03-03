@@ -5,8 +5,8 @@ import sys
 import numpy as np
 import sounddevice as sd
 
-from PyQt6.QtCore import QObject, QSettings, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtCore import QObject, QSettings, QSize, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import QTabBar
 from PyQt6.QtWidgets import (
     QApplication,
@@ -334,10 +334,15 @@ class MainWindow(QMainWindow):
         self._import_progress_dialog: QProgressDialog | None = None
         self._import_source_label = ""
         self._play_start_tick = 0
+        self._transport_mode: str | None = None  # None | "all" | "this"
+        self._transport_controls_enabled = True
         self._project_file_path: str | None = None
         self._settings_store = QSettings("CodeKokeshi", "Koke16BitStudio")
         self._recent_projects: list[str] = self._settings_store.value("recentProjects", [], list) or []
         self._recent_projects = [path for path in self._recent_projects if isinstance(path, str) and path.strip()]
+        self._svg_icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "svg_icons")
+        self._material_icon_codepoints: dict[str, str] = self._load_material_icon_codepoints()
+        self._material_icon_font: QFont | None = self._load_material_icon_font()
 
         self._build_ui()
         self._wire_signals()
@@ -409,14 +414,49 @@ class MainWindow(QMainWindow):
         self.btn_export = QPushButton("Export WAV")
 
         # File toolbar tooltips
-        self.btn_hum_music.setToolTip("Record from microphone and convert to retro music")
-        self.btn_open_recent.setToolTip("Browse recently opened projects")
-        self.btn_import_music.setToolTip("Import a WAV file and convert to multi-track chiptune")
-        self.btn_load_project.setToolTip("Open a .kokestudio project file (Ctrl+O)")
-        self.btn_save_project.setToolTip("Save the current project (Ctrl+S)")
-        self.btn_export.setToolTip("Export all tracks as a WAV file (Ctrl+E)")
         self.btn_generate = QPushButton("Generate")
-        self.btn_generate.setToolTip("Auto-generate multi-track retro music")
+        self._configure_toolbar_icon_button(
+            self.btn_open_recent,
+            "history",
+            "Open Recent",
+            "Browse recently opened projects",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_load_project,
+            "folder_open",
+            "Load Project",
+            "Open a .kokestudio project file (Ctrl+O)",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_save_project,
+            "save",
+            "Save Project",
+            "Save the current project (Ctrl+S)",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_import_music,
+            "library_music",
+            "Import Audio to Music",
+            "Import a WAV file and convert to multi-track chiptune",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_hum_music,
+            "mic",
+            "Hum to Music",
+            "Record from microphone and convert to retro music",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_generate,
+            "music_note",
+            "Generate Music",
+            "Auto-generate multi-track retro music",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_export,
+            "file_download",
+            "Export WAV",
+            "Export all tracks as a WAV file (Ctrl+E)",
+        )
 
         file_toolbar_layout.addWidget(self.btn_open_recent)
         file_toolbar_layout.addWidget(self.btn_load_project)
@@ -444,10 +484,48 @@ class MainWindow(QMainWindow):
         self.btn_redo.setToolTip("Redo (Ctrl+Y / Ctrl+Shift+Z)")
 
         # Tooltips for all toolbar buttons
-        self.btn_add_track.setToolTip("Add a new piano roll track")
-        self.btn_play_all.setToolTip("Play all tracks together (Space to toggle)")
-        self.btn_play_this.setToolTip("Solo-play the selected track")
-        self.btn_stop.setToolTip("Stop playback")
+        self._configure_toolbar_icon_button(
+            self.btn_add_track,
+            "add_box",
+            "Add Piano Roll Track",
+            "Add a new piano roll track",
+            svg_name="add_piano_roll.svg",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_undo,
+            "undo",
+            "Undo",
+            "Undo last project change (Ctrl+Z)",
+            svg_name="undo.svg",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_redo,
+            "redo",
+            "Redo",
+            "Redo (Ctrl+Y / Ctrl+Shift+Z)",
+            svg_name="redo.svg",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_play_all,
+            "play_arrow",
+            "Play All Tracks",
+            "Play all tracks together (Space to toggle)",
+            svg_name="play_all_tracks.svg",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_play_this,
+            "play_circle_filled",
+            "Play This Track",
+            "Solo-play the selected track",
+            svg_name="play_this_track.svg",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_stop,
+            "stop",
+            "Stop",
+            "Stop playback",
+            svg_name="stop.svg",
+        )
 
         studio_toolbar_layout.addWidget(self.btn_add_track)
         studio_toolbar_layout.addWidget(self.btn_undo)
@@ -495,10 +573,34 @@ class MainWindow(QMainWindow):
         self.btn_balance = QPushButton("Balance")
         self.btn_fix_loops = QPushButton("Fix Loops")
 
-        self.btn_beautify.setToolTip("Apply music-theory beautification to notes")
-        self.btn_remove_gaps.setToolTip("Collapse dead space between notes")
-        self.btn_balance.setToolTip("Extend shorter tracks to match the longest")
-        self.btn_fix_loops.setToolTip("Smooth end→start transitions for seamless looping")
+        self._configure_toolbar_icon_button(
+            self.btn_beautify,
+            "brush",
+            "Beautify",
+            "Apply music-theory beautification to notes",
+            svg_name="beautify.svg",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_remove_gaps,
+            "content_cut",
+            "Remove Gaps",
+            "Collapse dead space between notes",
+            svg_name="remove_gaps.svg",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_balance,
+            "equalizer",
+            "Balance",
+            "Extend shorter tracks to match the longest",
+            svg_name="balance.svg",
+        )
+        self._configure_toolbar_icon_button(
+            self.btn_fix_loops,
+            "loop",
+            "Fix Loops",
+            "Smooth end→start transitions for seamless looping",
+            svg_name="fix_loop.svg",
+        )
 
         magic_toolbar_layout.addWidget(self.btn_beautify)
         magic_toolbar_layout.addWidget(self.btn_remove_gaps)
@@ -508,6 +610,7 @@ class MainWindow(QMainWindow):
         self.toolbar_stack.addWidget(file_toolbar)
         self.toolbar_stack.addWidget(studio_toolbar)
         self.toolbar_stack.addWidget(magic_toolbar)
+        self._refresh_transport_buttons()
         self._set_toolbar_mode("studio")
 
         main.addWidget(header)
@@ -638,6 +741,107 @@ class MainWindow(QMainWindow):
 
         self.status = self.statusBar()
         self.status.showMessage("Ready. Add a track to start composing.")
+
+    def _load_material_icon_codepoints(self) -> dict[str, str]:
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        map_path = os.path.join(project_root, "assets", "fonts", "MaterialIcons-Regular.codepoints")
+        if not os.path.exists(map_path):
+            return {}
+
+        mapping: dict[str, str] = {}
+        try:
+            with open(map_path, "r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line or " " not in line:
+                        continue
+                    name, code_hex = line.split(" ", 1)
+                    mapping[name] = chr(int(code_hex, 16))
+        except Exception:
+            return {}
+        return mapping
+
+    def _load_material_icon_font(self) -> QFont | None:
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        font_path = os.path.join(project_root, "assets", "fonts", "MaterialIcons-Regular.ttf")
+        if not os.path.exists(font_path):
+            return None
+
+        font_id = QFontDatabase.addApplicationFont(font_path)
+        if font_id < 0:
+            return None
+
+        families = QFontDatabase.applicationFontFamilies(font_id)
+        if not families:
+            return None
+
+        font = QFont(families[0])
+        font.setPointSize(18)
+        return font
+
+    def _configure_toolbar_icon_button(
+        self,
+        button: QPushButton,
+        icon_ligature: str,
+        title: str,
+        description: str,
+        svg_name: str | None = None,
+    ) -> None:
+        if svg_name and self._apply_button_icon(button, svg_name=svg_name):
+            button.setFixedSize(38, 32)
+        elif self._material_icon_font is not None:
+            button.setIcon(QIcon())
+            button.setFont(self._material_icon_font)
+            button.setText(self._material_icon_codepoints.get(icon_ligature, icon_ligature))
+            button.setFixedSize(38, 32)
+        else:
+            button.setIcon(QIcon())
+            button.setText(title)
+            button.setFixedHeight(32)
+            button.setMinimumWidth(120)
+        button.setToolTip(f"{title}\n- {description}")
+
+    def _apply_button_icon(self, button: QPushButton, svg_name: str) -> bool:
+        icon_path = os.path.join(self._svg_icon_dir, svg_name)
+        if not os.path.exists(icon_path):
+            return False
+        button.setFont(QFont())
+        button.setText("")
+        button.setIcon(QIcon(icon_path))
+        button.setIconSize(QSize(20, 20))
+        return True
+
+    def _refresh_transport_buttons(self) -> None:
+        playing_all = self.audio.playing and self._transport_mode == "all"
+        playing_this = self.audio.playing and self._transport_mode == "this"
+
+        if playing_all:
+            self._apply_button_icon(self.btn_play_all, "pause_active.svg")
+        else:
+            self._apply_button_icon(self.btn_play_all, "play_all_tracks.svg")
+
+        if playing_this:
+            self._apply_button_icon(self.btn_play_this, "pause_active.svg")
+        else:
+            self._apply_button_icon(self.btn_play_this, "play_this_track.svg")
+
+        if self.audio.playing:
+            self.btn_stop.setStyleSheet("QPushButton { background-color: #cc2244; color: #ffffff; }")
+        else:
+            self.btn_stop.setStyleSheet("")
+
+        if not self._transport_controls_enabled:
+            return
+
+        if self.audio.paused and self._transport_mode == "all":
+            self.btn_play_all.setEnabled(True)
+            self.btn_play_this.setEnabled(False)
+        elif self.audio.paused and self._transport_mode == "this":
+            self.btn_play_all.setEnabled(False)
+            self.btn_play_this.setEnabled(True)
+        else:
+            self.btn_play_all.setEnabled(True)
+            self.btn_play_this.setEnabled(True)
 
     def _wire_signals(self):
         self.btn_tab_file.clicked.connect(lambda: self._set_toolbar_mode("file"))
@@ -833,7 +1037,7 @@ class MainWindow(QMainWindow):
             focus = QApplication.focusWidget()
             # Avoid triggering when focus is in a text-input widget
             if not isinstance(focus, (QSpinBox, QComboBox)):
-                if self.audio.playing:
+                if self.audio.playing or self.audio.paused:
                     self._on_stop()
                 else:
                     self._on_play_all()
@@ -927,8 +1131,8 @@ class MainWindow(QMainWindow):
             self._update_center_tab_close_buttons()
 
     def _apply_loaded_state(self, loaded: dict):
-        if self.audio.playing:
-            self.audio.stop()
+        if self.audio.playing or self.audio.paused:
+            self._stop_transport_state(announce=False)
 
         self._undo_mgr.clear()
 
@@ -1038,7 +1242,10 @@ class MainWindow(QMainWindow):
     def _start_hum_capture(self):
         self._hum_chunks = []
         self._hum_recording = True
-        self.btn_hum_music.setText("Stop Hum")
+        if self._material_icon_font is not None:
+            self.btn_hum_music.setText(self._material_icon_codepoints.get("stop", "stop"))
+        else:
+            self.btn_hum_music.setText("Stop Hum")
         self.btn_hum_music.setStyleSheet("border-color: #ff4444; color: #ff4444;")
         self.waveform_widget.set_active(True)
         self.status.showMessage("🎙 Recording – hum/sing into your mic. Click Stop Hum when done.")
@@ -1064,7 +1271,10 @@ class MainWindow(QMainWindow):
         except Exception:
             self._hum_recording = False
             self._hum_stream = None
-            self.btn_hum_music.setText("Hum → Music")
+            if self._material_icon_font is not None:
+                self.btn_hum_music.setText(self._material_icon_codepoints.get("mic", "mic"))
+            else:
+                self.btn_hum_music.setText("Hum → Music")
             self.btn_hum_music.setStyleSheet("")
             self.waveform_widget.set_active(False)
             self.status.showMessage("⚠ Microphone unavailable – check your audio device.", 4000)
@@ -1076,7 +1286,10 @@ class MainWindow(QMainWindow):
 
     def _stop_hum_capture_and_process(self):
         self._hum_recording = False
-        self.btn_hum_music.setText("Hum → Music")
+        if self._material_icon_font is not None:
+            self.btn_hum_music.setText(self._material_icon_codepoints.get("mic", "mic"))
+        else:
+            self.btn_hum_music.setText("Hum → Music")
         self.btn_hum_music.setStyleSheet("")
         if hasattr(self, "_hum_display_timer"):
             self._hum_display_timer.stop()
@@ -1234,14 +1447,18 @@ class MainWindow(QMainWindow):
         self._import_thread = None
 
     def _set_import_controls_enabled(self, enabled: bool):
+        self._transport_controls_enabled = enabled
         self.btn_add_track.setEnabled(enabled)
         self.btn_hum_music.setEnabled(enabled)
         self.btn_load_project.setEnabled(enabled)
         self.btn_save_project.setEnabled(enabled)
         self.btn_import_music.setEnabled(enabled)
-        self.btn_play_all.setEnabled(enabled)
-        self.btn_play_this.setEnabled(enabled)
         self.btn_stop.setEnabled(enabled)
+        if not enabled:
+            self.btn_play_all.setEnabled(False)
+            self.btn_play_this.setEnabled(False)
+        else:
+            self._refresh_transport_buttons()
 
     def _finalize_audio_to_music(self, split: dict[str, list[NoteEvent]], source_label: str):
         default_plan = [
@@ -1273,8 +1490,8 @@ class MainWindow(QMainWindow):
                 self.status.showMessage(f"{source_label} import cancelled.", 2500)
                 return
             if clear_answer == QMessageBox.StandardButton.Yes:
-                if self.audio.playing:
-                    self.audio.stop()
+                if self.audio.playing or self.audio.paused:
+                    self._stop_transport_state(announce=False)
                 self.project.tracks.clear()
                 self.project.selected_track_index = -1
                 self.audio._cache.clear()
@@ -1453,45 +1670,74 @@ class MainWindow(QMainWindow):
             self.editor.set_playhead(tick)
         self.status.showMessage(f"Start Here set to tick {tick}", 1500)
 
-    def _set_playing_style(self, active: bool):
-        """Toggle visual state on playback buttons."""
-        if active:
-            self.btn_play_all.setObjectName("playing")
-            self.btn_play_this.setObjectName("playing")
-            self.btn_stop.setStyleSheet(
-                "QPushButton { background-color: #cc2244; color: #ffffff; }"
-            )
-        else:
-            self.btn_play_all.setObjectName("")
-            self.btn_play_this.setObjectName("")
-            self.btn_stop.setStyleSheet("")
-        # Force style refresh
-        self.btn_play_all.style().unpolish(self.btn_play_all)
-        self.btn_play_all.style().polish(self.btn_play_all)
-        self.btn_play_this.style().unpolish(self.btn_play_this)
-        self.btn_play_this.style().polish(self.btn_play_this)
+    def _stop_transport_state(self, announce: bool) -> None:
+        self.audio.stop()
+        self._transport_mode = None
+        self._refresh_transport_buttons()
+        if announce:
+            self.status.showMessage("■ Playback stopped", 1500)
 
     def _on_play_all(self):
         if not self.project.tracks:
             self.status.showMessage("Add at least one track first.", 2000)
             return
-        self.audio.start(solo_track_index=None, start_tick=self._play_start_tick)
-        self._set_playing_style(True)
-        self.status.showMessage("\u25b6 Playing all tracks", 1500)
+
+        if self._transport_mode == "all":
+            if self.audio.playing:
+                self.audio.pause()
+                self._refresh_transport_buttons()
+                self.status.showMessage("⏸ Paused all tracks", 1500)
+                return
+            if self.audio.paused:
+                self.audio.resume()
+                self._refresh_transport_buttons()
+                self.status.showMessage("▶ Resumed all tracks", 1500)
+                return
+
+        if self.audio.playing:
+            self.audio.switch_playback_mode(solo_track_index=None)
+        elif self.audio.paused:
+            self.audio.switch_playback_mode(solo_track_index=None)
+            self.audio.resume()
+        else:
+            self.audio.start(solo_track_index=None, start_tick=self._play_start_tick)
+
+        self._transport_mode = "all"
+        self._refresh_transport_buttons()
+        self.status.showMessage("▶ Playing all tracks", 1500)
 
     def _on_play_this(self):
         row = self.list_tracks.currentRow()
         if row < 0 or row >= len(self.project.tracks):
             self.status.showMessage("Select a track first.", 2000)
             return
-        self.audio.start(solo_track_index=row, start_tick=self._play_start_tick)
-        self._set_playing_style(True)
+
+        if self._transport_mode == "this":
+            if self.audio.playing:
+                self.audio.pause()
+                self._refresh_transport_buttons()
+                self.status.showMessage(f"⏸ Paused: {self.project.tracks[row].name}", 1500)
+                return
+            if self.audio.paused:
+                self.audio.resume()
+                self._refresh_transport_buttons()
+                self.status.showMessage(f"▷ Resumed: {self.project.tracks[row].name}", 1500)
+                return
+
+        if self.audio.playing:
+            self.audio.switch_playback_mode(solo_track_index=row)
+        elif self.audio.paused:
+            self.audio.switch_playback_mode(solo_track_index=row)
+            self.audio.resume()
+        else:
+            self.audio.start(solo_track_index=row, start_tick=self._play_start_tick)
+
+        self._transport_mode = "this"
+        self._refresh_transport_buttons()
         self.status.showMessage(f"\u25b7 Playing: {self.project.tracks[row].name}", 1500)
 
     def _on_stop(self):
-        self.audio.stop()
-        self._set_playing_style(False)
-        self.status.showMessage("\u25a0 Playback stopped", 1500)
+        self._stop_transport_state(announce=True)
 
     # ── Beautify ───────────────────────────────────────────────────
 
@@ -1818,8 +2064,8 @@ class MainWindow(QMainWindow):
                 if answer == QMessageBox.StandardButton.Cancel:
                     return
                 if answer == QMessageBox.StandardButton.Yes:
-                    if self.audio.playing:
-                        self.audio.stop()
+                    if self.audio.playing or self.audio.paused:
+                        self._stop_transport_state(announce=False)
                     self.project.tracks.clear()
                     self.project.selected_track_index = -1
                     self.audio._cache.clear()
@@ -1942,8 +2188,8 @@ class MainWindow(QMainWindow):
 
         self._push_project_undo("Delete Track(s)")
 
-        if self.audio.playing:
-            self.audio.stop()
+        if self.audio.playing or self.audio.paused:
+            self._stop_transport_state(announce=False)
 
         # Remove from highest index first to preserve lower indices
         for r in reversed(rows):
@@ -2004,8 +2250,8 @@ class MainWindow(QMainWindow):
             return
 
         # Stop playback so audio engine doesn't interfere
-        if self.audio.playing:
-            self.audio.stop()
+        if self.audio.playing or self.audio.paused:
+            self._stop_transport_state(announce=False)
 
         # Ask how many loops
         loops, ok = QInputDialog.getInt(
