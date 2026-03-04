@@ -40,10 +40,12 @@ _CHORD_TYPES: dict[str, list[int]] = {
     "dim":   [0, 3, 6],
     "aug":   [0, 4, 8],
     "sus4":  [0, 5, 7],
+    "sus2":  [0, 2, 7],
     "7":     [0, 4, 7, 10],
     "m7":    [0, 3, 7, 10],
     "maj7":  [0, 4, 7, 11],
     "dim7":  [0, 3, 6, 9],
+    "add9":  [0, 4, 7, 14],
 }
 
 
@@ -71,6 +73,22 @@ def _chord_notes(root_midi: int, quality: str) -> list[int]:
 
 
 # ── Genre configurations ────────────────────────────────────────────
+
+
+@dataclass
+class ExtraTrackConfig:
+    """Configuration for an extra track beyond Lead/Bass/Harmony/Drums."""
+    role: str
+    gen_type: str               # "counter_melody", "pad", "arpeggio"
+    instrument: tuple[str, str]
+    vel: tuple[int, int] = (60, 85)
+    pitch_range: tuple[int, int] = (48, 72)
+    mix_range: tuple[float, float] = (0.45, 0.70)
+    rest_prob: float = 0.2
+    step_max: int = 3
+    rhythm: list[list[tuple[int, int]]] = field(default_factory=list)
+    pan: float = 0.0            # -1.0 (left) .. +1.0 (right)
+
 
 @dataclass
 class GenreConfig:
@@ -122,6 +140,22 @@ class GenreConfig:
     # Melody behaviour
     lead_step_max: int = 4          # max scale-step jump per note
     lead_rest_prob: float = 0.1     # probability of a rest instead of a note
+
+    # Style variants
+    lead_style: str = "default"       # "default", "arpeggio_peaks", "question_answer"
+    bass_style: str = "default"       # "default", "waltz", "walking"
+
+    # Per-track panning  (-1.0 left .. +1.0 right)
+    lead_pan: float = 0.0
+    bass_pan: float = 0.0
+    harmony_pan: float = 0.0
+    drum_pan: float = 0.0
+
+    # Lead doubling: create a "sparkle" copy at low volume  (instrument_name, waveform, volume)
+    lead_doubling: tuple[str, str, float] | None = None
+
+    # Extra tracks beyond the standard Lead / Bass / Harmony / Drums
+    extra_tracks: list[ExtraTrackConfig] = field(default_factory=list)
 
 
 # Helper to build tick-offset patterns
@@ -526,6 +560,216 @@ def _genre_boss_battle() -> GenreConfig:
     )
 
 
+def _genre_town() -> GenreConfig:
+    """Town – cozy starting-town feel (Pokemon-style).
+
+    Randomly picks one of three internal techniques each generation:
+    - Pallet style: bright diatonic I-IV-V, arpeggiated-peak melody
+    - Littleroot style: secondary dominants, question-answer melody, waltz bass
+    - Azalea style: maj7/add9 jazz chords, walking bass, trumpet lead
+    """
+    style = random.choice(["pallet", "littleroot", "azalea"])
+
+    if style == "pallet":
+        return GenreConfig(
+            name="Town",
+            bpm_range=(95, 110),
+            bars=8,
+            root_choices=[0, 7],                       # C or G Major
+            scale_choices=["major"],
+            progressions=[
+                # I – IV – V – I
+                [(0, "maj"), (3, "maj"), (4, "maj"), (0, "maj")] * 2,
+                # I – IV – V – V
+                [(0, "maj"), (3, "maj"), (4, "maj"), (4, "maj")] * 2,
+                # I – vi – ii – V
+                [(0, "maj"), (5, "min"), (1, "min"), (4, "maj")] * 2,
+                # I – IV – vi – V
+                [(0, "maj"), (3, "maj"), (5, "min"), (4, "maj")] * 2,
+            ],
+            lead_rhythm=[
+                _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 2, 2.5, 3],
+                               [0.5, 0.5, 1, 0.5, 0.5, 1]),
+                _simple_rhythm(_TPB, _BPB, [0, 1, 1.5, 2, 3, 3.5],
+                               [1, 0.5, 0.5, 1, 0.5, 0.5]),
+            ],
+            bass_rhythm=[
+                _simple_rhythm(_TPB, _BPB, [0, 2], [2, 2]),
+                _simple_rhythm(_TPB, _BPB, [0], [4]),
+            ],
+            drum_rhythm=[
+                _simple_rhythm(_TPB, _BPB, [0, 2], [0.25, 0.25]),
+                _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3],
+                               [0.25, 0.25, 0.25, 0.25]),
+            ],
+            lead_instrument=("SNES Flute", "sine"),
+            bass_instrument=("SNES Acoustic", "triangle"),
+            harmony_instrument=("NES Square", "square"),
+            drum_instrument=("NES Noise", "noise"),
+            lead_vel=(75, 100),
+            bass_vel=(65, 85),
+            harmony_vel=(50, 70),
+            drum_vel=(40, 60),
+            lead_mix_range=(0.72, 0.90),
+            bass_mix_range=(0.55, 0.75),
+            harmony_mix_range=(0.40, 0.60),
+            drum_mix_range=(0.30, 0.50),
+            lead_range=(60, 84),
+            bass_range=(36, 55),
+            harmony_range=(48, 72),
+            lead_step_max=3,
+            lead_rest_prob=0.10,
+            lead_style="arpeggio_peaks",
+            extra_tracks=[
+                ExtraTrackConfig(
+                    role="Counter Melody",
+                    gen_type="counter_melody",
+                    instrument=("SNES Harp", "sine"),
+                    vel=(55, 75),
+                    pitch_range=(55, 76),
+                    mix_range=(0.35, 0.55),
+                    rest_prob=0.35,
+                    step_max=2,
+                ),
+            ],
+        )
+
+    if style == "littleroot":
+        return GenreConfig(
+            name="Town",
+            bpm_range=(100, 115),
+            bars=8,
+            scale_choices=["major"],
+            progressions=[
+                # I → V/V → V → I  (secondary dominant)
+                [(0, "maj"), (1, "7"), (4, "maj"), (0, "maj")] * 2,
+                # I → vi → V/V → V
+                [(0, "maj"), (5, "min"), (1, "7"), (4, "maj")] * 2,
+                # I → IV → V/V → V
+                [(0, "maj"), (3, "maj"), (1, "7"), (4, "maj")] * 2,
+                # I → ii → V → I
+                [(0, "maj"), (1, "min"), (4, "maj"), (0, "maj")] * 2,
+            ],
+            lead_rhythm=[
+                _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [1, 1, 1, 1]),
+                _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 2, 3],
+                               [0.5, 0.5, 1, 1, 1]),
+            ],
+            bass_rhythm=[
+                _simple_rhythm(_TPB, _BPB, [0, 2, 3], [2, 1, 1]),
+            ],
+            drum_rhythm=[
+                _simple_rhythm(_TPB, _BPB, [0, 2, 3],
+                               [0.25, 0.25, 0.25]),
+                _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3],
+                               [0.25, 0.25, 0.25, 0.25]),
+            ],
+            lead_instrument=("SNES Piano", "pulse25"),
+            bass_instrument=("SNES Acoustic", "triangle"),
+            harmony_instrument=("SNES Strings", "sawtooth"),
+            drum_instrument=("NES Noise", "noise"),
+            lead_vel=(78, 100),
+            bass_vel=(65, 85),
+            harmony_vel=(45, 65),
+            drum_vel=(38, 58),
+            lead_mix_range=(0.70, 0.88),
+            bass_mix_range=(0.58, 0.78),
+            harmony_mix_range=(0.38, 0.55),
+            drum_mix_range=(0.28, 0.48),
+            lead_range=(60, 84),
+            bass_range=(36, 55),
+            harmony_range=(48, 72),
+            lead_step_max=3,
+            lead_rest_prob=0.08,
+            lead_style="question_answer",
+            bass_style="waltz",
+            extra_tracks=[
+                ExtraTrackConfig(
+                    role="Strings Pad",
+                    gen_type="pad",
+                    instrument=("SNES Strings", "sawtooth"),
+                    vel=(35, 55),
+                    pitch_range=(48, 72),
+                    mix_range=(0.25, 0.42),
+                    rest_prob=0.1,
+                ),
+                ExtraTrackConfig(
+                    role="Counter Melody",
+                    gen_type="counter_melody",
+                    instrument=("SNES Flute", "sine"),
+                    vel=(55, 75),
+                    pitch_range=(60, 79),
+                    mix_range=(0.35, 0.52),
+                    rest_prob=0.40,
+                    step_max=2,
+                ),
+            ],
+        )
+
+    # style == "azalea"
+    return GenreConfig(
+        name="Town",
+        bpm_range=(90, 108),
+        bars=8,
+        scale_choices=["major", "dorian"],
+        progressions=[
+            # Imaj7 → vim7 → iim7 → V7
+            [(0, "maj7"), (5, "m7"), (1, "m7"), (4, "7")] * 2,
+            # Imaj7 → IVmaj7 → iim7 → V7
+            [(0, "maj7"), (3, "maj7"), (1, "m7"), (4, "7")] * 2,
+            # Iadd9 → IIIm7 → vim7 → IVmaj7
+            [(0, "add9"), (2, "m7"), (5, "m7"), (3, "maj7")] * 2,
+            # Imaj7 → vim7 → IV → V7
+            [(0, "maj7"), (5, "m7"), (3, "maj"), (4, "7")] * 2,
+        ],
+        lead_rhythm=[
+            _simple_rhythm(_TPB, _BPB, [0, 1, 1.5, 2, 3, 3.5],
+                           [1, 0.5, 0.5, 1, 0.5, 0.5]),
+            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 2, 2.5, 3],
+                           [0.5, 0.5, 1, 0.5, 0.5, 1]),
+        ],
+        bass_rhythm=[
+            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [1, 1, 1, 1]),
+        ],
+        drum_rhythm=[
+            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3],
+                           [0.25, 0.25, 0.25, 0.25]),
+            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
+                           [0.25] * 8),
+        ],
+        lead_instrument=("SNES Trumpet", "sawtooth"),
+        bass_instrument=("SNES Slap Bass", "square"),
+        harmony_instrument=("SNES Piano", "pulse25"),
+        drum_instrument=("NES Noise", "noise"),
+        lead_vel=(72, 95),
+        bass_vel=(70, 90),
+        harmony_vel=(45, 65),
+        drum_vel=(42, 62),
+        lead_mix_range=(0.68, 0.88),
+        bass_mix_range=(0.60, 0.80),
+        harmony_mix_range=(0.38, 0.58),
+        drum_mix_range=(0.32, 0.52),
+        lead_range=(55, 79),
+        bass_range=(36, 55),
+        harmony_range=(48, 72),
+        lead_step_max=4,
+        lead_rest_prob=0.12,
+        bass_style="walking",
+        extra_tracks=[
+            ExtraTrackConfig(
+                role="Counter Melody",
+                gen_type="counter_melody",
+                instrument=("SNES Flute", "sine"),
+                vel=(50, 70),
+                pitch_range=(60, 79),
+                mix_range=(0.30, 0.50),
+                rest_prob=0.35,
+                step_max=3,
+            ),
+        ],
+    )
+
+
 # ── Registry of all genres ──────────────────────────────────────────
 
 GENRE_BUILDERS: dict[str, type(lambda: None)] = {
@@ -538,6 +782,7 @@ GENRE_BUILDERS: dict[str, type(lambda: None)] = {
     "Retro / Chiptune": _genre_retro,
     "Mystery":          _genre_mystery,
     "Boss Battle":      _genre_boss_battle,
+    "Town":             _genre_town,
 }
 
 GENRE_NAMES: list[str] = list(GENRE_BUILDERS.keys())
@@ -552,6 +797,7 @@ class GeneratedTrack:
     waveform: str
     volume: float
     notes: list[NoteEvent]
+    pan: float = 0.0            # -1.0 (left) .. +1.0 (right)
 
 
 @dataclass
@@ -652,6 +898,7 @@ def generate_music(genre_name: str, *,
             cfg.lead_instrument[1],
             _rand_mix(cfg.lead_mix_range),
             lead_notes,
+            pan=cfg.lead_pan,
         ),
         GeneratedTrack(
             "Bass",
@@ -659,6 +906,7 @@ def generate_music(genre_name: str, *,
             cfg.bass_instrument[1],
             _rand_mix(cfg.bass_mix_range),
             bass_notes,
+            pan=cfg.bass_pan,
         ),
         GeneratedTrack(
             "Harmony",
@@ -666,6 +914,7 @@ def generate_music(genre_name: str, *,
             cfg.harmony_instrument[1],
             _rand_mix(cfg.harmony_mix_range),
             harmony_notes,
+            pan=cfg.harmony_pan,
         ),
         GeneratedTrack(
             "Drums",
@@ -673,8 +922,39 @@ def generate_music(genre_name: str, *,
             cfg.drum_instrument[1],
             _rand_mix(cfg.drum_mix_range),
             drum_notes,
+            pan=cfg.drum_pan,
         ),
     ]
+
+    # ── Lead-doubling track (GBA "sparkle" technique) ───────────
+    if cfg.lead_doubling is not None:
+        dbl_instr, dbl_wave, dbl_vol = cfg.lead_doubling
+        # Clone the lead notes at lower volume
+        dbl_notes = [NoteEvent(n.start_tick, n.length_tick, n.midi_note, n.velocity)
+                     for n in lead_notes]
+        tracks.append(GeneratedTrack(
+            "Lead Sparkle",
+            dbl_instr,
+            dbl_wave,
+            round(dbl_vol, 2),
+            dbl_notes,
+            pan=cfg.lead_pan,
+        ))
+
+    # ── Generate EXTRA tracks (flexible track count) ────────────
+    for extra_cfg in cfg.extra_tracks:
+        extra_notes = _generate_extra_track(
+            extra_cfg, cfg, scale, chord_prog, intervals, root,
+            bar_ticks, tpb, bpb, lead_notes,
+        )
+        tracks.append(GeneratedTrack(
+            extra_cfg.role,
+            extra_cfg.instrument[0],
+            extra_cfg.instrument[1],
+            _rand_mix(extra_cfg.mix_range),
+            extra_notes,
+            pan=extra_cfg.pan,
+        ))
 
     # ── Loop-friendly post-processing ───────────────────────────────
     if loop_friendly:
@@ -732,6 +1012,23 @@ def _generate_lead(cfg: GenreConfig, scale: list[int],
         bar_start = bar_idx * bar_ticks
         pattern = random.choice(rhythm_patterns)
 
+        # ── Lead-style direction bias ──
+        step_bias = 0
+        if cfg.lead_style == "arpeggio_peaks":
+            # Every other bar: jump to upper register, then cascade down
+            if bar_idx % 2 == 0:
+                current_idx = min(len(lead_scale) - 1,
+                                  int(len(lead_scale) * 0.80)
+                                  + random.randint(-2, 2))
+            step_bias = -1  # cascade downward
+        elif cfg.lead_style == "question_answer":
+            # 4-bar phrases: bars 0-1 ascend (question), bars 2-3 descend (answer)
+            phrase_bar = bar_idx % 4
+            if phrase_bar == 0:
+                current_idx = max(0, int(len(lead_scale) * 0.3)
+                                  + random.randint(-2, 2))
+            step_bias = 1 if phrase_bar < 2 else -1
+
         # Get chord tones for guidance
         idx_in_scale = degree % len(intervals)
         chord_root_semitone = root + intervals[idx_in_scale]
@@ -746,7 +1043,12 @@ def _generate_lead(cfg: GenreConfig, scale: list[int],
 
             # Walk with bias toward chord tones
             max_step = cfg.lead_step_max
-            step = random.randint(-max_step, max_step)
+            if step_bias > 0:
+                step = random.randint(0, max_step)
+            elif step_bias < 0:
+                step = random.randint(-max_step, 0)
+            else:
+                step = random.randint(-max_step, max_step)
 
             # Bias: if current note's pitch class is not a chord tone, try to step toward one
             candidate_idx = max(0, min(len(lead_scale) - 1, current_idx + step))
@@ -807,6 +1109,50 @@ def _generate_bass(cfg: GenreConfig, scale: list[int],
         fifth_pc = (chord_root_pc + 7) % 12
         fifth_candidates = [n for n in bass_scale if n % 12 == fifth_pc]
         bass_fifth = random.choice(fifth_candidates) if fifth_candidates else bass_root
+
+        # ── Bass style overrides ──
+        if cfg.bass_style == "waltz":
+            # Beat 1: low root (2 beats), Beat 3: higher 3rd, Beat 4: 5th
+            vel = random.randint(*cfg.bass_vel)
+            notes.append(NoteEvent(bar_start, tpb * 2, bass_root,
+                                   min(127, vel)))
+            third_pc = (chord_root_pc + 4) % 12
+            third_cands = [n for n in bass_scale
+                           if n % 12 == third_pc and n >= bass_root]
+            higher = (random.choice(third_cands)
+                      if third_cands else bass_fifth)
+            v2 = max(30, random.randint(*cfg.bass_vel) - 10)
+            notes.append(NoteEvent(bar_start + tpb * 2, tpb, higher,
+                                   min(127, v2)))
+            v3 = max(30, random.randint(*cfg.bass_vel) - 10)
+            notes.append(NoteEvent(
+                bar_start + tpb * 3, tpb,
+                bass_fifth if random.random() < 0.5 else higher,
+                min(127, v3)))
+            continue
+
+        if cfg.bass_style == "walking":
+            # Step through scale notes toward next chord root
+            next_deg = chord_prog[(bar_idx + 1) % len(chord_prog)][0]
+            next_pc = (root + intervals[next_deg % len(intervals)]) % 12
+            next_cands = [n for n in bass_scale if n % 12 == next_pc]
+            next_root = (random.choice(next_cands)
+                         if next_cands else bass_root)
+            cur_bs = min(range(len(bass_scale)),
+                         key=lambda i: abs(bass_scale[i] - bass_root))
+            tgt_bs = min(range(len(bass_scale)),
+                         key=lambda i: abs(bass_scale[i] - next_root))
+            for beat in range(bpb):
+                t = beat / bpb
+                interp = int(cur_bs + (tgt_bs - cur_bs) * t)
+                interp = max(0, min(len(bass_scale) - 1, interp))
+                if beat > 0 and random.random() < 0.3:
+                    interp = max(0, min(len(bass_scale) - 1,
+                                        interp + random.choice([-1, 1])))
+                vel = random.randint(*cfg.bass_vel)
+                notes.append(NoteEvent(bar_start + beat * tpb, tpb,
+                                       bass_scale[interp], min(127, vel)))
+            continue
 
         for note_idx, (tick_off, length) in enumerate(pattern):
             # Alternate root and fifth with some randomness
@@ -994,5 +1340,215 @@ def _generate_drums(cfg: GenreConfig, bar_ticks: int,
                         midi_note=random.choice([snare, kick]),
                         velocity=min(127, random.randint(*cfg.drum_vel)),
                     ))
+
+    return notes
+
+
+# ── Extra-track generators (for flexible track count) ─────────────
+
+def _generate_extra_track(extra: ExtraTrackConfig, cfg: GenreConfig,
+                          scale: list[int],
+                          chord_prog: list[tuple[int, str]],
+                          intervals: list[int], root: int,
+                          bar_ticks: int, tpb: int, bpb: int,
+                          lead_notes: list[NoteEvent]) -> list[NoteEvent]:
+    """Dispatch to the appropriate extra-track generator."""
+    if extra.gen_type == "counter_melody":
+        return _gen_counter_melody(extra, cfg, scale, chord_prog,
+                                   intervals, root, bar_ticks, tpb, bpb,
+                                   lead_notes)
+    if extra.gen_type == "pad":
+        return _gen_pad(extra, cfg, scale, chord_prog,
+                        intervals, root, bar_ticks, tpb, bpb)
+    if extra.gen_type == "arpeggio":
+        return _gen_arpeggio(extra, cfg, scale, chord_prog,
+                             intervals, root, bar_ticks, tpb, bpb)
+    return []
+
+
+def _gen_counter_melody(
+    extra: ExtraTrackConfig, cfg: GenreConfig,
+    scale: list[int], chord_prog: list[tuple[int, str]],
+    intervals: list[int], root: int,
+    bar_ticks: int, tpb: int, bpb: int,
+    lead_notes: list[NoteEvent],
+) -> list[NoteEvent]:
+    """Counter-melody that weaves around the lead, filling gaps."""
+    notes: list[NoteEvent] = []
+    lo, hi = extra.pitch_range
+    counter_scale = [s for s in scale if lo <= s <= hi]
+    if not counter_scale:
+        counter_scale = list(range(lo, hi + 1))
+    current_idx = len(counter_scale) // 2
+
+    # Build tick-level occupancy from lead
+    lead_occupied: set[int] = set()
+    for n in lead_notes:
+        for t in range(n.start_tick, n.start_tick + n.length_tick):
+            lead_occupied.add(t)
+
+    rhythm_patterns = extra.rhythm or [
+        _simple_rhythm(tpb, bpb, [0, 2], [1.5, 1.5]),
+        _simple_rhythm(tpb, bpb, [1, 3], [1, 1]),
+        _simple_rhythm(tpb, bpb, [0.5, 1.5, 2.5, 3.5],
+                       [0.5, 0.5, 0.5, 0.5]),
+    ]
+
+    for bar_idx, (degree, _quality) in enumerate(chord_prog):
+        bar_start = bar_idx * bar_ticks
+        pattern = random.choice(rhythm_patterns)
+
+        idx_in_scale = degree % len(intervals)
+        chord_root_semi = root + intervals[idx_in_scale]
+        chord_tones = {(chord_root_semi + iv) % 12
+                       for iv in _CHORD_TYPES.get(_quality, [0, 4, 7])}
+
+        for tick_off, length in pattern:
+            abs_tick = bar_start + tick_off
+            if abs_tick in lead_occupied and random.random() < 0.6:
+                continue
+            if random.random() < extra.rest_prob:
+                continue
+
+            step = random.randint(-extra.step_max, extra.step_max)
+            candidate_idx = max(0, min(len(counter_scale) - 1,
+                                       current_idx + step))
+            candidate_note = counter_scale[candidate_idx]
+
+            # Bias toward chord tones ~50 %
+            if random.random() < 0.5:
+                chord_idx = [i for i, n in enumerate(counter_scale)
+                             if n % 12 in chord_tones]
+                if chord_idx:
+                    candidate_idx = min(chord_idx,
+                                        key=lambda i: abs(i - current_idx))
+                    candidate_note = counter_scale[candidate_idx]
+
+            current_idx = candidate_idx
+            vel = random.randint(*extra.vel)
+            notes.append(NoteEvent(
+                start_tick=abs_tick,
+                length_tick=length,
+                midi_note=candidate_note,
+                velocity=min(127, vel),
+            ))
+
+    return notes
+
+
+def _gen_pad(
+    extra: ExtraTrackConfig, cfg: GenreConfig,
+    scale: list[int], chord_prog: list[tuple[int, str]],
+    intervals: list[int], root: int,
+    bar_ticks: int, tpb: int, bpb: int,
+) -> list[NoteEvent]:
+    """Sustained pad voicings following chord progression."""
+    notes: list[NoteEvent] = []
+    lo, hi = extra.pitch_range
+
+    for bar_idx, (degree, quality) in enumerate(chord_prog):
+        bar_start = bar_idx * bar_ticks
+        if random.random() < extra.rest_prob:
+            continue
+
+        idx_in_scale = degree % len(intervals)
+        chord_root_pc = (root + intervals[idx_in_scale]) % 12
+
+        chord_root = None
+        for octave in range(11):
+            candidate = chord_root_pc + octave * 12
+            if lo <= candidate <= hi:
+                chord_root = candidate
+                break
+        if chord_root is None:
+            chord_root = (lo + hi) // 2
+
+        # Two-note voicing (root + one colour tone)
+        chord_ivs = _CHORD_TYPES.get(quality, [0, 4, 7])
+        voicing: list[int] = []
+        for iv in chord_ivs[:2]:
+            note = chord_root + iv
+            while note > hi and note > 12:
+                note -= 12
+            while note < lo:
+                note += 12
+            if lo <= note <= hi:
+                voicing.append(note)
+        if not voicing:
+            voicing = [chord_root]
+
+        vel = random.randint(*extra.vel)
+        for midi in voicing:
+            notes.append(NoteEvent(
+                start_tick=bar_start,
+                length_tick=bar_ticks,
+                midi_note=midi,
+                velocity=min(127, vel),
+            ))
+
+    return notes
+
+
+def _gen_arpeggio(
+    extra: ExtraTrackConfig, cfg: GenreConfig,
+    scale: list[int], chord_prog: list[tuple[int, str]],
+    intervals: list[int], root: int,
+    bar_ticks: int, tpb: int, bpb: int,
+) -> list[NoteEvent]:
+    """Arpeggiated extra track cycling through chord voicings."""
+    notes: list[NoteEvent] = []
+    lo, hi = extra.pitch_range
+
+    for bar_idx, (degree, quality) in enumerate(chord_prog):
+        bar_start = bar_idx * bar_ticks
+        idx_in_scale = degree % len(intervals)
+        chord_root_pc = (root + intervals[idx_in_scale]) % 12
+
+        chord_root = None
+        for octave in range(11):
+            candidate = chord_root_pc + octave * 12
+            if lo <= candidate <= hi:
+                chord_root = candidate
+                break
+        if chord_root is None:
+            chord_root = (lo + hi) // 2
+
+        chord_ivs = _CHORD_TYPES.get(quality, [0, 4, 7])
+        voicing: list[int] = []
+        for iv in chord_ivs:
+            note = chord_root + iv
+            while note > hi and note > 12:
+                note -= 12
+            while note < lo:
+                note += 12
+            if lo <= note <= hi:
+                voicing.append(note)
+        if not voicing:
+            voicing = [chord_root]
+
+        arp_style = random.choice(["up", "down", "updown"])
+        if arp_style == "down":
+            pattern_notes = list(reversed(voicing))
+        elif arp_style == "updown":
+            mid = voicing[1:-1] if len(voicing) > 2 else voicing
+            pattern_notes = voicing + list(reversed(mid))
+        else:
+            pattern_notes = list(voicing)
+
+        note_dur = max(1, tpb // 2)
+        tick = 0
+        idx = 0
+        while tick < bar_ticks:
+            if random.random() >= extra.rest_prob:
+                midi = pattern_notes[idx % len(pattern_notes)]
+                vel = random.randint(*extra.vel)
+                notes.append(NoteEvent(
+                    start_tick=bar_start + tick,
+                    length_tick=min(note_dur, bar_ticks - tick),
+                    midi_note=midi,
+                    velocity=min(127, vel),
+                ))
+            idx += 1
+            tick += note_dur
 
     return notes

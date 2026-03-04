@@ -393,12 +393,9 @@ class MainWindow(QMainWindow):
         toolbar_row = QHBoxLayout()
         toolbar_row.setContentsMargins(0, 0, 0, 0)
         toolbar_row.setSpacing(0)
-        toolbar_row.addStretch(1)
 
         self.toolbar_stack = QStackedWidget()
-        toolbar_row.addWidget(self.toolbar_stack, 0, Qt.AlignmentFlag.AlignCenter)
-
-        toolbar_row.addStretch(1)
+        toolbar_row.addWidget(self.toolbar_stack, 1)
         header_layout.addLayout(toolbar_row)
 
         file_toolbar = QWidget()
@@ -420,42 +417,49 @@ class MainWindow(QMainWindow):
             "history",
             "Open Recent",
             "Browse recently opened projects",
+            svg_name="open_recent.svg",
         )
         self._configure_toolbar_icon_button(
             self.btn_load_project,
             "folder_open",
             "Load Project",
             "Open a .kokestudio project file (Ctrl+O)",
+            svg_name="load_project.svg",
         )
         self._configure_toolbar_icon_button(
             self.btn_save_project,
             "save",
             "Save Project",
             "Save the current project (Ctrl+S)",
+            svg_name="save_project.svg",
         )
         self._configure_toolbar_icon_button(
             self.btn_import_music,
             "library_music",
             "Import Audio to Music",
             "Import a WAV file and convert to multi-track chiptune",
+            svg_name="import_audio.svg",
         )
         self._configure_toolbar_icon_button(
             self.btn_hum_music,
             "mic",
             "Hum to Music",
             "Record from microphone and convert to retro music",
+            svg_name="hum.svg",
         )
         self._configure_toolbar_icon_button(
             self.btn_generate,
             "music_note",
             "Generate Music",
             "Auto-generate multi-track retro music",
+            svg_name="generate_music.svg",
         )
         self._configure_toolbar_icon_button(
             self.btn_export,
             "file_download",
             "Export WAV",
             "Export all tracks as a WAV file (Ctrl+E)",
+            svg_name="export_wav.svg",
         )
 
         file_toolbar_layout.addWidget(self.btn_open_recent)
@@ -607,9 +611,30 @@ class MainWindow(QMainWindow):
         magic_toolbar_layout.addWidget(self.btn_balance)
         magic_toolbar_layout.addWidget(self.btn_fix_loops)
 
-        self.toolbar_stack.addWidget(file_toolbar)
-        self.toolbar_stack.addWidget(studio_toolbar)
-        self.toolbar_stack.addWidget(magic_toolbar)
+        combined_toolbar = QWidget()
+        combined_toolbar_layout = QHBoxLayout(combined_toolbar)
+        combined_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        combined_toolbar_layout.setSpacing(8)
+
+        sep_left = QFrame()
+        sep_left.setFrameShape(QFrame.Shape.VLine)
+        sep_left.setFrameShadow(QFrame.Shadow.Plain)
+        sep_left.setStyleSheet("color:#2e2e2e;")
+
+        sep_right = QFrame()
+        sep_right.setFrameShape(QFrame.Shape.VLine)
+        sep_right.setFrameShadow(QFrame.Shadow.Plain)
+        sep_right.setStyleSheet("color:#2e2e2e;")
+
+        combined_toolbar_layout.addWidget(file_toolbar, 0, Qt.AlignmentFlag.AlignLeft)
+        combined_toolbar_layout.addWidget(sep_left)
+        combined_toolbar_layout.addStretch(1)
+        combined_toolbar_layout.addWidget(studio_toolbar, 0, Qt.AlignmentFlag.AlignCenter)
+        combined_toolbar_layout.addStretch(1)
+        combined_toolbar_layout.addWidget(sep_right)
+        combined_toolbar_layout.addWidget(magic_toolbar, 0, Qt.AlignmentFlag.AlignRight)
+
+        self.toolbar_stack.addWidget(combined_toolbar)
         self._refresh_transport_buttons()
         self._set_toolbar_mode("studio")
 
@@ -640,6 +665,35 @@ class MainWindow(QMainWindow):
         self.track_volume.setValue(80)
         left_l.addWidget(QLabel("Track Volume"))
         left_l.addWidget(self.track_volume)
+
+        # Pan slider: -100 (left) .. 0 (center) .. +100 (right)
+        self.track_pan = QSlider(Qt.Orientation.Horizontal)
+        self.track_pan.setRange(-100, 100)
+        self.track_pan.setValue(0)
+        left_l.addWidget(QLabel("Pan  (L ← → R)"))
+        left_l.addWidget(self.track_pan)
+
+        # Mute / Solo toggle row
+        ms_row = QHBoxLayout()
+        ms_row.setSpacing(6)
+        self.btn_mute = QPushButton("M")
+        self.btn_mute.setCheckable(True)
+        self.btn_mute.setToolTip("Mute selected track(s)")
+        self.btn_mute.setFixedWidth(36)
+        self.btn_mute.setStyleSheet(
+            "QPushButton:checked{background:#e74c3c;color:#fff;font-weight:bold;}"
+        )
+        self.btn_solo = QPushButton("S")
+        self.btn_solo.setCheckable(True)
+        self.btn_solo.setToolTip("Solo selected track(s)")
+        self.btn_solo.setFixedWidth(36)
+        self.btn_solo.setStyleSheet(
+            "QPushButton:checked{background:#f1c40f;color:#222;font-weight:bold;}"
+        )
+        ms_row.addWidget(self.btn_mute)
+        ms_row.addWidget(self.btn_solo)
+        ms_row.addStretch()
+        left_l.addLayout(ms_row)
 
         splitter.addWidget(left)
 
@@ -876,6 +930,11 @@ class MainWindow(QMainWindow):
         self.track_volume.valueChanged.connect(self._on_track_volume_changed)
         self.track_volume.sliderPressed.connect(self._on_volume_drag_start)
         self.track_volume.sliderReleased.connect(self._on_volume_drag_end)
+        self.track_pan.valueChanged.connect(self._on_track_pan_changed)
+        self.track_pan.sliderPressed.connect(self._on_volume_drag_start)
+        self.track_pan.sliderReleased.connect(self._on_volume_drag_end)
+        self.btn_mute.clicked.connect(self._on_mute_toggled)
+        self.btn_solo.clicked.connect(self._on_solo_toggled)
 
         self.editor.note_selected.connect(self._on_note_selected)
         self.editor.note_audition.connect(self._on_note_audition)
@@ -896,6 +955,9 @@ class MainWindow(QMainWindow):
         self.btn_tab_file.setChecked(is_file)
         self.btn_tab_studio.setChecked(is_studio)
         self.btn_tab_magic.setChecked(is_magic)
+        if self.toolbar_stack.count() <= 1:
+            self.toolbar_stack.setCurrentIndex(0)
+            return
         mode_to_index = {"file": 0, "studio": 1, "magic": 2}
         self.toolbar_stack.setCurrentIndex(mode_to_index.get(mode, 1))
 
@@ -1242,10 +1304,11 @@ class MainWindow(QMainWindow):
     def _start_hum_capture(self):
         self._hum_chunks = []
         self._hum_recording = True
-        if self._material_icon_font is not None:
-            self.btn_hum_music.setText(self._material_icon_codepoints.get("stop", "stop"))
-        else:
-            self.btn_hum_music.setText("Stop Hum")
+        if not self._apply_button_icon(self.btn_hum_music, "stop.svg"):
+            if self._material_icon_font is not None:
+                self.btn_hum_music.setText(self._material_icon_codepoints.get("stop", "stop"))
+            else:
+                self.btn_hum_music.setText("Stop Hum")
         self.btn_hum_music.setStyleSheet("border-color: #ff4444; color: #ff4444;")
         self.waveform_widget.set_active(True)
         self.status.showMessage("🎙 Recording – hum/sing into your mic. Click Stop Hum when done.")
@@ -1271,10 +1334,11 @@ class MainWindow(QMainWindow):
         except Exception:
             self._hum_recording = False
             self._hum_stream = None
-            if self._material_icon_font is not None:
-                self.btn_hum_music.setText(self._material_icon_codepoints.get("mic", "mic"))
-            else:
-                self.btn_hum_music.setText("Hum → Music")
+            if not self._apply_button_icon(self.btn_hum_music, "hum.svg"):
+                if self._material_icon_font is not None:
+                    self.btn_hum_music.setText(self._material_icon_codepoints.get("mic", "mic"))
+                else:
+                    self.btn_hum_music.setText("Hum → Music")
             self.btn_hum_music.setStyleSheet("")
             self.waveform_widget.set_active(False)
             self.status.showMessage("⚠ Microphone unavailable – check your audio device.", 4000)
@@ -1286,10 +1350,11 @@ class MainWindow(QMainWindow):
 
     def _stop_hum_capture_and_process(self):
         self._hum_recording = False
-        if self._material_icon_font is not None:
-            self.btn_hum_music.setText(self._material_icon_codepoints.get("mic", "mic"))
-        else:
-            self.btn_hum_music.setText("Hum → Music")
+        if not self._apply_button_icon(self.btn_hum_music, "hum.svg"):
+            if self._material_icon_font is not None:
+                self.btn_hum_music.setText(self._material_icon_codepoints.get("mic", "mic"))
+            else:
+                self.btn_hum_music.setText("Hum → Music")
         self.btn_hum_music.setStyleSheet("")
         if hasattr(self, "_hum_display_timer"):
             self._hum_display_timer.stop()
@@ -1589,6 +1654,15 @@ class MainWindow(QMainWindow):
         self.track_volume.blockSignals(True)
         self.track_volume.setValue(int(track.volume * 100))
         self.track_volume.blockSignals(False)
+        self.track_pan.blockSignals(True)
+        self.track_pan.setValue(int(track.pan * 100))
+        self.track_pan.blockSignals(False)
+        self.btn_mute.blockSignals(True)
+        self.btn_mute.setChecked(track.muted)
+        self.btn_mute.blockSignals(False)
+        self.btn_solo.blockSignals(True)
+        self.btn_solo.setChecked(track.solo)
+        self.btn_solo.blockSignals(False)
 
         selected = self._get_selected_track_rows()
         if len(selected) > 1:
@@ -1612,6 +1686,35 @@ class MainWindow(QMainWindow):
     def _on_volume_drag_end(self):
         """Volume drag finished — undo state was already captured on press."""
         self._update_undo_status()
+
+    def _on_track_pan_changed(self, value: int):
+        """Apply pan to all selected tracks (multi-select aware)."""
+        rows = self._get_selected_track_rows()
+        if rows:
+            for r in rows:
+                self.project.tracks[r].pan = value / 100.0
+        elif self.project.selected_track:
+            self.project.selected_track.pan = value / 100.0
+
+    def _on_mute_toggled(self):
+        """Toggle mute on all selected tracks."""
+        checked = self.btn_mute.isChecked()
+        rows = self._get_selected_track_rows()
+        if rows:
+            for r in rows:
+                self.project.tracks[r].muted = checked
+        elif self.project.selected_track:
+            self.project.selected_track.muted = checked
+
+    def _on_solo_toggled(self):
+        """Toggle solo on all selected tracks."""
+        checked = self.btn_solo.isChecked()
+        rows = self._get_selected_track_rows()
+        if rows:
+            for r in rows:
+                self.project.tracks[r].solo = checked
+        elif self.project.selected_track:
+            self.project.selected_track.solo = checked
 
     def _on_note_selected(self, note_obj):
         self._active_note = note_obj
@@ -1640,7 +1743,8 @@ class MainWindow(QMainWindow):
     def _on_note_audition(self, midi_note: int):
         track = self.project.selected_track
         if track:
-            self.audio.preview_note(track.waveform, midi_note, 110)
+            self.audio.preview_note(track.waveform, midi_note, 110,
+                                    instrument_name=track.instrument_name)
 
     def _on_bpm_changed(self, value: int):
         self.audio.set_bpm(value)
@@ -2091,6 +2195,7 @@ class MainWindow(QMainWindow):
                     instrument_name=gt.instrument_name,
                     waveform=gt.waveform,
                     volume=gt.volume,
+                    pan=gt.pan,
                     notes=list(gt.notes),
                 )
                 self.project.tracks.append(track)

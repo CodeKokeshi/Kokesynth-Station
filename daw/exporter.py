@@ -3,64 +3,20 @@
 Renders the project to a numpy buffer (or directly to a WAV file)
 by synthesising every note with the same waveforms used by the
 real-time playback engine.  Supports exporting multiple loops.
+Now renders **stereo** output with per-track panning and instrument
+presets (ADSR, vibrato, filter).
 """
 
 from __future__ import annotations
 
-import struct
 import wave
 from typing import Callable
 
 import numpy as np
 
 from daw.models import Project
-
-
-# ─── Waveform generation (mirrors audio.py _build_sound) ──────────────
-
-def _generate_wave(
-    waveform: str,
-    midi_note: int,
-    duration_s: float,
-    amp: float,
-    apply_attack: bool = True,
-    apply_release: bool = True,
-    sample_rate: int = 44100,
-) -> np.ndarray:
-    """Synthesise a single note as float32 samples in [-1, 1]."""
-    n_samples = max(1, int(sample_rate * duration_s))
-    t = np.arange(n_samples, dtype=np.float32) / sample_rate
-    freq = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
-
-    if waveform == "square":
-        w = np.where((t * freq) % 1.0 < 0.5, 1.0, -1.0).astype(np.float32)
-    elif waveform == "pulse25":
-        w = np.where((t * freq) % 1.0 < 0.25, 1.0, -1.0).astype(np.float32)
-    elif waveform == "pulse12":
-        w = np.where((t * freq) % 1.0 < 0.125, 1.0, -1.0).astype(np.float32)
-    elif waveform == "sawtooth":
-        w = (2.0 * ((t * freq) % 1.0) - 1.0).astype(np.float32)
-    elif waveform == "triangle":
-        ph = (t * freq) % 1.0
-        w = (2.0 * np.abs(2.0 * ph - 1.0) - 1.0).astype(np.float32)
-    elif waveform == "noise":
-        rng = np.random.default_rng(seed=(midi_note * 31 + int(duration_s * 1000)))
-        w = rng.uniform(-1.0, 1.0, n_samples).astype(np.float32)
-        decay = np.linspace(1.0, 0.0, n_samples, dtype=np.float32)
-        w *= decay
-    else:  # sine
-        w = np.sin(2.0 * np.pi * freq * t).astype(np.float32)
-
-    # Envelope: tiny attack + release to avoid clicks
-    attack = min(int(0.005 * sample_rate), n_samples // 4)
-    release = min(int(0.08 * sample_rate), n_samples // 2)
-    env = np.ones(n_samples, dtype=np.float32)
-    if apply_attack and attack > 0:
-        env[:attack] = np.linspace(0.0, 1.0, attack, dtype=np.float32)
-    if apply_release and release > 0:
-        env[-release:] = np.linspace(1.0, 0.0, release, dtype=np.float32)
-
-    return np.clip(w * env * amp, -1.0, 1.0)
+from daw.instruments import get_preset
+from daw.audio import synthesize_note   # single synthesis path shared with playback
 
 
 # ─── Loop-window helper (mirrors audio.py) ────────────────────────────
@@ -99,7 +55,7 @@ def render_project(
     sample_rate: int = 44100,
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> np.ndarray:
-    """Render the whole project to a float32 mono buffer.
+    """Render the whole project to a float32 **stereo** buffer.
 
     Parameters
     ----------
@@ -115,7 +71,7 @@ def render_project(
     Returns
     -------
     np.ndarray
-        Mono float32 samples in ``[-1, 1]``.
+        Stereo float32 array of shape ``(N, 2)`` with values in ``[-1, 1]``.
     """
     loops = max(1, loops)
 
@@ -130,13 +86,20 @@ def render_project(
     total_seconds = total_ticks * spt
     total_samples = int(total_seconds * sample_rate) + sample_rate  # +1s safety
 
-    buf = np.zeros(total_samples, dtype=np.float32)
+    # Stereo buffer: (N, 2)
+    buf = np.zeros((total_samples, 2), dtype=np.float32)
 
     if progress_callback:
         progress_callback(5, "Preparing render\u2026")
 
+    # Determine active tracks (respect mute/solo)
+    soloed = [t for t in project.tracks if t.solo]
+    if soloed:
+        active_tracks = [t for t in soloed if t.notes]
+    else:
+        active_tracks = [t for t in project.tracks if t.notes and not t.muted]
+
     # Count total notes to render for progress
-    active_tracks = [t for t in project.tracks if t.notes]
     total_notes = 0
     for track in active_tracks:
         notes_in_range = [n for n in track.notes
@@ -150,6 +113,11 @@ def render_project(
         if not notes_in_range:
             continue
 
+        preset = get_preset(track.instrument_name)
+        # Pan: -1.0 (left) .. +1.0 (right)
+        left_gain = min(1.0, 1.0 - track.pan)
+        right_gain = min(1.0, 1.0 + track.pan)
+
         for loop_i in range(loops):
             tick_offset = loop_i * loop_ticks
 
@@ -158,31 +126,33 @@ def render_project(
                 rel_tick = (note.start_tick - loop_start) + tick_offset
                 start_s = rel_tick * spt
                 dur_s = max(0.04, note.length_tick * spt)
-                amp = max(0.05, min(1.0, note.velocity / 127.0)) * track.volume
+                vel_amp = max(0.05, min(1.0, note.velocity / 127.0)) * track.volume
                 note_end_tick = note.start_tick + note.length_tick
                 apply_attack = not (loop_i > 0 and note.start_tick == loop_start)
                 apply_release = not (loop_i < loops - 1 and note_end_tick >= loop_end)
 
-                wave = _generate_wave(
+                mono = synthesize_note(
                     track.waveform,
                     note.midi_note,
                     dur_s,
-                    amp,
+                    amp=vel_amp,
+                    preset=preset,
                     apply_attack=apply_attack,
                     apply_release=apply_release,
                     sample_rate=sample_rate,
                 )
 
                 start_idx = int(start_s * sample_rate)
-                end_idx = start_idx + len(wave)
+                end_idx = start_idx + len(mono)
 
                 if start_idx >= total_samples:
                     continue
                 if end_idx > total_samples:
-                    wave = wave[: total_samples - start_idx]
+                    mono = mono[: total_samples - start_idx]
                     end_idx = total_samples
 
-                buf[start_idx:end_idx] += wave
+                buf[start_idx:end_idx, 0] += mono * left_gain
+                buf[start_idx:end_idx, 1] += mono * right_gain
 
                 rendered_notes += 1
                 if progress_callback and total_notes > 0:
@@ -193,20 +163,21 @@ def render_project(
                     )
 
     # Trim trailing silence (no extra tail pad for seamless loops)
-    last_nonzero = np.flatnonzero(np.abs(buf) > 1e-6)
+    mag = np.max(np.abs(buf), axis=1)
+    last_nonzero = np.flatnonzero(mag > 1e-6)
     if last_nonzero.size > 0:
         buf = buf[: last_nonzero[-1] + 1]
     else:
         buf = buf[:sample_rate]  # 1 second of silence if nothing rendered
 
-    # Normalize to avoid clipping
+    # Normalize to avoid clipping (per-channel aware)
     peak = float(np.max(np.abs(buf)))
     if peak > 1.0:
         buf /= peak
     elif peak > 0:
         # Gentle boost if quiet
         buf *= min(1.0 / peak, 2.0)
-        buf = np.clip(buf, -1.0, 1.0)
+        np.clip(buf, -1.0, 1.0, out=buf)
 
     if progress_callback:
         progress_callback(100, "Render complete.")
@@ -223,13 +194,15 @@ def export_wav(
     sample_rate: int = 44100,
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> None:
-    """Render and write a 16-bit mono WAV file."""
+    """Render and write a 16-bit **stereo** WAV file."""
     buf = render_project(project, loops, sample_rate, progress_callback)
 
-    samples_16 = np.clip(buf * 32767, -32768, 32767).astype(np.int16)
+    # buf is (N, 2) float32 — interleave to [L0, R0, L1, R1, ...]
+    stereo_16 = np.clip(buf * 32767, -32768, 32767).astype(np.int16)
+    interleaved = np.ascontiguousarray(stereo_16)
 
     with wave.open(path, "wb") as wf:
-        wf.setnchannels(1)
+        wf.setnchannels(2)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
-        wf.writeframes(samples_16.tobytes())
+        wf.writeframes(interleaved.tobytes())

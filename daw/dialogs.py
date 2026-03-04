@@ -662,7 +662,7 @@ class GenerateMusicDialog(QDialog):
 
         desc = QLabel(
             "Select a genre and click Generate to create a full\n"
-            "multi-track song (Lead, Bass, Harmony, Drums)."
+            "multi-track song. Track count varies by genre."
         )
         desc.setStyleSheet("color: #aaaaaa; font-size: 12px;")
         layout.addWidget(desc)
@@ -672,7 +672,7 @@ class GenerateMusicDialog(QDialog):
             "Happy": "😊", "Calm": "🌿", "Sad": "😢",
             "Horror": "👻", "Epic": "⚔️", "Action": "💥",
             "Retro / Chiptune": "🕹️", "Mystery": "🔮",
-            "Boss Battle": "🐉",
+            "Boss Battle": "🐉", "Town": "🏡",
         }
         for name in GENRE_NAMES:
             icon = _GENRE_ICONS.get(name, "🎵")

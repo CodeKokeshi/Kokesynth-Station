@@ -17,6 +17,9 @@ class Track:
     instrument_name: str
     waveform: str
     volume: float = 0.8
+    pan: float = 0.0            # -1.0 (full left) to +1.0 (full right)
+    muted: bool = False
+    solo: bool = False
     notes: list[NoteEvent] = field(default_factory=list)
 
 

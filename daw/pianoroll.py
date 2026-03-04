@@ -4,7 +4,7 @@ import copy
 
 from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from daw.models import NoteEvent, Track
 from daw.shortcuts import ShortcutConfig, binding_matches, is_pure_modifier_key, modifiers_equal
@@ -61,6 +61,8 @@ class PianoRollCanvas(QWidget):
         self._redo_stack: list[list[tuple[int, int, int, int]]] = []
         self._max_undo = 120
         self.shortcut_config = ShortcutConfig()
+        self._clipboard: list[tuple[int, int, int, int]] = []  # (rel_tick, length, midi_note, velocity)
+        self.snap_grid: int = 1  # 1 = off, 4 = quarter note, etc.
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -136,6 +138,56 @@ class PianoRollCanvas(QWidget):
         self._push_undo_state()
         self.track.notes = [note for note in self.track.notes if id(note) not in self.selected_note_ids]
         self._set_single_selection(None)
+        self.update()
+
+    # ── Snap helper ─────────────────────────────────────────────────
+    def _snap(self, tick: int) -> int:
+        """Snap a tick value to the current grid size (1 = no snap)."""
+        if self.snap_grid <= 1:
+            return tick
+        return round(tick / self.snap_grid) * self.snap_grid
+
+    # ── Copy / Paste ────────────────────────────────────────────────
+    def copy_selected_notes(self):
+        if not self.track or not self.selected_note_ids:
+            return
+        selected = [n for n in self.track.notes if id(n) in self.selected_note_ids]
+        if not selected:
+            return
+        min_tick = min(n.start_tick for n in selected)
+        self._clipboard = [
+            (n.start_tick - min_tick, n.length_tick, n.midi_note, n.velocity)
+            for n in selected
+        ]
+
+    def paste_notes(self):
+        if not self.track or not self._clipboard:
+            return
+        self._push_undo_state()
+        # Paste at playhead position (or at the start)
+        base_tick = self.playhead_tick
+        new_notes = []
+        for rel_tick, length, pitch, vel in self._clipboard:
+            new_note = NoteEvent(
+                start_tick=self._snap(base_tick + rel_tick),
+                length_tick=length, midi_note=pitch, velocity=vel,
+            )
+            self.track.notes.append(new_note)
+            new_notes.append(new_note)
+        self._set_multi_selection(new_notes)
+        self.update()
+
+    # ── Transpose ───────────────────────────────────────────────────
+    def transpose_selected(self, semitones: int):
+        if not self.track or not self.selected_note_ids:
+            return
+        self._push_undo_state()
+        for note in self.track.notes:
+            if id(note) in self.selected_note_ids:
+                new_pitch = note.midi_note + semitones
+                note.midi_note = max(self.NOTE_BOTTOM, min(self.NOTE_TOP, new_pitch))
+        if self.selected_note:
+            self.note_selected.emit(self.selected_note)
         self.update()
 
     def _update_canvas_size(self):
@@ -308,11 +360,12 @@ class PianoRollCanvas(QWidget):
             self.update()
             return
 
-        # create note
-        tick = self.x_to_tick(pos.x())
+        # create note (snap to grid)
+        tick = self._snap(self.x_to_tick(pos.x()))
         pitch = self.y_to_pitch(pos.y())
         self._push_undo_state()
-        new_note = NoteEvent(start_tick=tick, length_tick=4, midi_note=pitch, velocity=100)
+        default_len = max(1, self.snap_grid) if self.snap_grid > 1 else 4
+        new_note = NoteEvent(start_tick=tick, length_tick=default_len, midi_note=pitch, velocity=100)
         self.track.notes.append(new_note)
         self._set_single_selection(new_note)
         self._drag_note = new_note
@@ -426,6 +479,41 @@ class PianoRollCanvas(QWidget):
             self.note_selected.emit(None)
             event.accept()
             return
+
+        # Copy / Paste / Cut
+        if key == int(Qt.Key.Key_C) and mods == Qt.KeyboardModifier.ControlModifier:
+            self.copy_selected_notes()
+            event.accept()
+            return
+        if key == int(Qt.Key.Key_V) and mods == Qt.KeyboardModifier.ControlModifier:
+            self.paste_notes()
+            event.accept()
+            return
+        if key == int(Qt.Key.Key_X) and mods == Qt.KeyboardModifier.ControlModifier:
+            self.copy_selected_notes()
+            self.delete_selected_notes()
+            event.accept()
+            return
+
+        # Transpose: Shift+Up/Down = ±1 semitone, Ctrl+Shift+Up/Down = ±12
+        ctrl_shift = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        if key == int(Qt.Key.Key_Up) and mods == Qt.KeyboardModifier.ShiftModifier:
+            self.transpose_selected(1)
+            event.accept()
+            return
+        if key == int(Qt.Key.Key_Down) and mods == Qt.KeyboardModifier.ShiftModifier:
+            self.transpose_selected(-1)
+            event.accept()
+            return
+        if key == int(Qt.Key.Key_Up) and mods == ctrl_shift:
+            self.transpose_selected(12)
+            event.accept()
+            return
+        if key == int(Qt.Key.Key_Down) and mods == ctrl_shift:
+            self.transpose_selected(-12)
+            event.accept()
+            return
+
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):  # noqa: N802
@@ -493,9 +581,14 @@ class PianoRollCanvas(QWidget):
                 rect = self.note_rect(note)
                 selected = self._is_selected(note)
                 hovered = note is self.hover_note
-                fill = QColor("#00d8a8" if not selected else "#25ffcf")
+                # Velocity-based coloring: quiet=darker teal, loud=brighter cyan
+                vel_t = max(0.0, min(1.0, note.velocity / 127.0))
+                base_r = int(0 + vel_t * 0)
+                base_g = int(128 + vel_t * 88)   # 128..216
+                base_b = int(100 + vel_t * 68)    # 100..168
+                fill = QColor(base_r, base_g, base_b) if not selected else QColor("#25ffcf")
                 if hovered and not selected:
-                    fill = QColor("#19f0be")
+                    fill = fill.lighter(120)
                 border = QColor("#b6fff0" if selected else "#00ffc8")
                 if hovered and not selected:
                     border = QColor("#78ffe2")
@@ -624,6 +717,20 @@ class PianoRollEditor(QWidget):
         self.lbl_start_tick.setMinimumWidth(56)
         top_bar_layout.addWidget(self.lbl_start_tick)
 
+        # Snap-to-grid selector
+        snap_label = QLabel("Snap:")
+        snap_label.setStyleSheet("color:#aaa; font-size:11px;")
+        top_bar_layout.addWidget(snap_label)
+        self.snap_combo = QComboBox()
+        self.snap_combo.addItem("Off", 1)
+        self.snap_combo.addItem("1/4", 1)     # 1 tick (= quarter note when tpb=4)
+        self.snap_combo.addItem("1/2", 2)
+        self.snap_combo.addItem("Beat", 4)
+        self.snap_combo.addItem("Bar", 16)
+        self.snap_combo.setFixedWidth(64)
+        self.snap_combo.currentIndexChanged.connect(self._on_snap_changed)
+        top_bar_layout.addWidget(self.snap_combo)
+
         layout.addWidget(top_bar)
 
         self.scroll = QScrollArea()
@@ -717,3 +824,8 @@ class PianoRollEditor(QWidget):
 
         new_left_x = int(left_tick * new_width - self.canvas.KEY_WIDTH)
         hbar.setValue(max(hbar.minimum(), min(hbar.maximum(), new_left_x)))
+
+    def _on_snap_changed(self, index: int):
+        grid = self.snap_combo.currentData()
+        if grid is not None:
+            self.canvas.snap_grid = int(grid)

@@ -8,6 +8,167 @@ import pygame
 import pygame.mixer
 
 from daw.models import Project
+from daw.instruments import get_preset, SynthPreset
+
+
+# ── Shared synthesis (used by both audio.py and exporter.py) ────────
+
+def synthesize_note(
+    waveform: str,
+    midi_note: int,
+    duration: float,
+    amp: float = 1.0,
+    preset: SynthPreset | None = None,
+    apply_attack: bool = True,
+    apply_release: bool = True,
+    sample_rate: int = 44100,
+) -> np.ndarray:
+    """Synthesise a single note as float32 samples in [-1, 1].
+
+    Applies per-instrument ADSR envelope, vibrato, and low-pass filter.
+    """
+    if preset is None:
+        preset = SynthPreset()
+
+    n_samples = max(1, int(sample_rate * duration))
+    t = np.arange(n_samples, dtype=np.float32) / sample_rate
+    freq = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
+
+    # ── Vibrato (pitch modulation) ──────────────────────────────────
+    if preset.vibrato_rate > 0 and preset.vibrato_depth > 0:
+        # vibrato_depth is in semitones; convert to freq multiplier
+        vib = preset.vibrato_depth * np.sin(
+            2.0 * np.pi * preset.vibrato_rate * t
+        ).astype(np.float32)
+        instantaneous_freq = freq * (2.0 ** (vib / 12.0))
+        # Phase accumulation for vibrato
+        phase = np.cumsum(instantaneous_freq / sample_rate).astype(np.float32)
+    else:
+        phase = (t * freq).astype(np.float32)
+
+    # ── Waveform generation ─────────────────────────────────────────
+    if waveform == "square":
+        wave = np.where(phase % 1.0 < 0.5, 1.0, -1.0).astype(np.float32)
+    elif waveform == "pulse25":
+        wave = np.where(phase % 1.0 < 0.25, 1.0, -1.0).astype(np.float32)
+    elif waveform == "pulse12":
+        wave = np.where(phase % 1.0 < 0.125, 1.0, -1.0).astype(np.float32)
+    elif waveform == "sawtooth":
+        wave = (2.0 * (phase % 1.0) - 1.0).astype(np.float32)
+    elif waveform == "triangle":
+        ph = phase % 1.0
+        wave = (2.0 * np.abs(2.0 * ph - 1.0) - 1.0).astype(np.float32)
+    elif waveform == "noise":
+        rng = np.random.default_rng(seed=(midi_note * 31 + int(duration * 1000)))
+        wave = rng.uniform(-1.0, 1.0, n_samples).astype(np.float32)
+        # Noise uses a simple decay from the preset
+        decay_samples = max(1, int(max(preset.decay, duration) * sample_rate))
+        if decay_samples < n_samples:
+            decay_env = np.ones(n_samples, dtype=np.float32)
+            decay_env[decay_samples:] = 0.0
+            ramp = np.linspace(1.0, 0.0, decay_samples, dtype=np.float32)
+            decay_env[:decay_samples] = ramp
+            wave *= decay_env
+        else:
+            wave *= np.linspace(1.0, 0.0, n_samples, dtype=np.float32)
+    else:  # sine
+        wave = np.sin(2.0 * np.pi * phase).astype(np.float32)
+
+    # ── Low-pass filter (simple 1-pole IIR) ─────────────────────────
+    if 0 < preset.filter_cutoff < 1.0:
+        # Map cutoff (0–1) to a frequency, then to alpha
+        # cutoff=1.0 → no filter, cutoff=0.0 → very dark
+        cutoff_freq = 200.0 + preset.filter_cutoff * (sample_rate * 0.45 - 200.0)
+        rc = 1.0 / (2.0 * np.pi * cutoff_freq)
+        dt = 1.0 / sample_rate
+        alpha = dt / (rc + dt)
+        # Apply using vectorized lfilter-style
+        _simple_lowpass_inplace(wave, alpha)
+
+    # ── ADSR envelope ───────────────────────────────────────────────
+    env = _build_adsr(
+        n_samples, sample_rate, preset,
+        apply_attack=apply_attack,
+        apply_release=apply_release,
+    )
+    wave *= env
+
+    # ── Final amplitude + clipping ──────────────────────────────────
+    wave *= amp
+    np.clip(wave, -1.0, 1.0, out=wave)
+
+    # Tiny tail to avoid clicks
+    if apply_release:
+        tail = np.zeros(int(0.005 * sample_rate), dtype=np.float32)
+        wave = np.concatenate([wave, tail])
+
+    return wave
+
+
+def _simple_lowpass_inplace(buf: np.ndarray, alpha: float) -> None:
+    """In-place single-pole low-pass filter (fast C-loop via numpy)."""
+    # Fallback to a vectorized approximation for speed:
+    # For very short buffers a simple loop is fine,
+    # but for longer ones we approximate using a multi-pass convolution.
+    if len(buf) < 2:
+        return
+    # Number of passes for a steeper rolloff (2-pole approximation)
+    for _ in range(2):
+        prev = buf[0]
+        for i in range(1, len(buf)):
+            prev = prev + alpha * (buf[i] - prev)
+            buf[i] = prev
+
+
+def _build_adsr(
+    n_samples: int,
+    sample_rate: int,
+    preset: SynthPreset,
+    apply_attack: bool = True,
+    apply_release: bool = True,
+) -> np.ndarray:
+    """Build an ADSR envelope array."""
+    env = np.ones(n_samples, dtype=np.float32)
+
+    a_samples = int(preset.attack * sample_rate) if apply_attack else 0
+    d_samples = int(preset.decay * sample_rate)
+    r_samples = int(preset.release * sample_rate) if apply_release else 0
+    sustain = preset.sustain
+
+    # Clamp: attack + decay must not exceed total length
+    ad = a_samples + d_samples
+    if ad > n_samples:
+        ratio = n_samples / max(ad, 1)
+        a_samples = int(a_samples * ratio)
+        d_samples = n_samples - a_samples
+
+    # Attack: 0 → 1
+    if a_samples > 0:
+        env[:a_samples] = np.linspace(0.0, 1.0, a_samples, dtype=np.float32)
+
+    # Decay: 1 → sustain
+    if d_samples > 0 and sustain < 1.0:
+        d_start = a_samples
+        d_end = d_start + d_samples
+        if d_end > n_samples:
+            d_end = n_samples
+            d_samples = d_end - d_start
+        if d_samples > 0:
+            env[d_start:d_end] = np.linspace(1.0, sustain, d_samples, dtype=np.float32)
+
+    # Sustain: hold at sustain level
+    sustain_start = a_samples + d_samples
+    if sustain_start < n_samples and sustain < 1.0:
+        env[sustain_start:] = sustain
+
+    # Release: sustain → 0
+    if r_samples > 0:
+        r_samples = min(r_samples, n_samples)
+        # Blend the release over the last r_samples
+        release_curve = np.linspace(1.0, 0.0, r_samples, dtype=np.float32)
+        env[-r_samples:] *= release_curve
+
+    return env
 
 
 class AudioEngine(QObject):
@@ -23,7 +184,7 @@ class AudioEngine(QObject):
         self._solo_track_index: int | None = None
         self._start_tick: int | None = None
         self._loop_cycle_index = 0
-        self._cache: dict[tuple[str, int, int, int, int], object] = {}
+        self._cache: dict = {}
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -31,7 +192,7 @@ class AudioEngine(QObject):
         self.available = False
         try:
             if not pygame.mixer.get_init():
-                pygame.mixer.pre_init(self.sample_rate, -16, 1, 512)
+                pygame.mixer.pre_init(self.sample_rate, -16, 2, 512)
                 pygame.mixer.init()
             pygame.mixer.set_num_channels(64)
             self.available = True
@@ -89,15 +250,18 @@ class AudioEngine(QObject):
             pygame.mixer.stop()
         self._solo_track_index = None
 
-    def preview_note(self, waveform: str, midi_note: int, velocity: int = 100) -> None:
+    def preview_note(self, waveform: str, midi_note: int, velocity: int = 100,
+                     instrument_name: str = "") -> None:
         if not self.available:
             return
         duration = 0.25
         amp = max(0.05, min(1.0, velocity / 127.0)) * 0.6
-        sound = self._get_sound(waveform, midi_note, duration)
+        preset = get_preset(instrument_name) if instrument_name else SynthPreset()
+        sound = self._get_sound(waveform, midi_note, duration, preset=preset)
         ch = pygame.mixer.find_channel(True)
-        ch.set_volume(amp)
-        ch.play(sound)  # type: ignore[arg-type]
+        if ch:
+            ch.set_volume(amp, amp)  # stereo: equal L/R for preview
+            ch.play(sound)
 
     def _tick_ms(self) -> int:
         return max(15, int(60000 / (self.project.bpm * self.project.ticks_per_beat)))
@@ -105,6 +269,9 @@ class AudioEngine(QObject):
     def _tick(self) -> None:
         loop_start, loop_end = self._loop_window()
         for track in self._playback_tracks():
+            if track.muted:
+                continue
+            preset = get_preset(track.instrument_name)
             for note in track.notes:
                 if note.start_tick == self.current_tick:
                     dur = max(0.04, note.length_tick / self.project.ticks_per_beat * 60.0 / self.project.bpm)
@@ -119,13 +286,18 @@ class AudioEngine(QObject):
                         track.waveform,
                         note.midi_note,
                         dur,
+                        preset=preset,
                         apply_attack=apply_attack,
                         apply_release=apply_release,
                     )
                     ch = pygame.mixer.find_channel(True)
                     if ch is not None:
-                        ch.set_volume(vel_amp * track.volume)
-                        ch.play(sound)  # type: ignore[arg-type]
+                        # Stereo panning: pan -1..+1 → left/right volume
+                        vol = vel_amp * track.volume
+                        left_vol = vol * min(1.0, 1.0 - track.pan)
+                        right_vol = vol * min(1.0, 1.0 + track.pan)
+                        ch.set_volume(left_vol, right_vol)
+                        ch.play(sound)
 
         next_tick = self.current_tick + 1
         if next_tick >= loop_end:
@@ -170,85 +342,54 @@ class AudioEngine(QObject):
         return max(loop_start, min(loop_end - 1, self._start_tick))
 
     def _playback_tracks(self) -> list:
-        if self._solo_track_index is None:
-            return self.project.tracks
-        if 0 <= self._solo_track_index < len(self.project.tracks):
-            return [self.project.tracks[self._solo_track_index]]
-        return []
+        if self._solo_track_index is not None:
+            if 0 <= self._solo_track_index < len(self.project.tracks):
+                return [self.project.tracks[self._solo_track_index]]
+            return []
+        # Check if any track has solo enabled
+        soloed = [t for t in self.project.tracks if t.solo]
+        if soloed:
+            return soloed
+        return self.project.tracks
 
     def _get_sound(
         self,
         waveform: str,
         midi_note: int,
         duration: float,
+        preset: SynthPreset | None = None,
         apply_attack: bool = True,
         apply_release: bool = True,
     ):
-        """Return a cached Sound at full volume (volume applied via channel)."""
+        """Return a cached stereo Sound at full volume (volume applied via channel)."""
+        p = preset or SynthPreset()
         key = (
             waveform,
             midi_note,
             int(duration * 1000),
             int(apply_attack),
             int(apply_release),
+            id(type(p)),  # preset identity for cache discrimination
+            int(p.attack * 10000),
+            int(p.decay * 10000),
+            int(p.sustain * 100),
+            int(p.release * 10000),
+            int(p.vibrato_rate * 100),
+            int(p.vibrato_depth * 100),
+            int(p.filter_cutoff * 100),
         )
         if key not in self._cache:
-            self._cache[key] = self._build_sound(
-                waveform,
-                midi_note,
-                duration,
-                amp=1.0,
+            wave = synthesize_note(
+                waveform, midi_note, duration,
+                amp=1.0, preset=p,
                 apply_attack=apply_attack,
                 apply_release=apply_release,
+                sample_rate=self.sample_rate,
             )
+            # Convert mono float32 → stereo int16 for pygame
+            samples_16 = np.ascontiguousarray(wave * 32767, dtype=np.int16)
+            # Interleave for stereo (identical L/R — panning done via channel volume)
+            stereo = np.column_stack([samples_16, samples_16]).flatten()
+            stereo = np.ascontiguousarray(stereo)
+            self._cache[key] = pygame.mixer.Sound(stereo)
         return self._cache[key]
-
-    def _build_sound(
-        self,
-        waveform: str,
-        midi_note: int,
-        duration: float,
-        amp: float,
-        apply_attack: bool = True,
-        apply_release: bool = True,
-    ):
-        n_samples = max(1, int(self.sample_rate * duration))
-        t = np.arange(n_samples, dtype=np.float32) / self.sample_rate
-        freq = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
-
-        if waveform == "square":
-            wave = np.where((t * freq) % 1.0 < 0.5, 1.0, -1.0).astype(np.float32)
-        elif waveform == "pulse25":
-            wave = np.where((t * freq) % 1.0 < 0.25, 1.0, -1.0).astype(np.float32)
-        elif waveform == "pulse12":
-            wave = np.where((t * freq) % 1.0 < 0.125, 1.0, -1.0).astype(np.float32)
-        elif waveform == "sawtooth":
-            wave = (2.0 * ((t * freq) % 1.0) - 1.0).astype(np.float32)
-        elif waveform == "triangle":
-            ph = (t * freq) % 1.0
-            wave = (2.0 * np.abs(2.0 * ph - 1.0) - 1.0).astype(np.float32)
-        elif waveform == "noise":
-            rng = np.random.default_rng(seed=(midi_note * 31 + int(duration * 1000)))
-            wave = rng.uniform(-1.0, 1.0, n_samples).astype(np.float32)
-            decay = np.linspace(1.0, 0.0, n_samples, dtype=np.float32)
-            wave *= decay
-        else:
-            wave = np.sin(2.0 * np.pi * freq * t).astype(np.float32)
-
-        # Envelope: match exporter exactly (attack 5ms, release 80ms)
-        attack = min(int(0.005 * self.sample_rate), n_samples // 4)
-        release = min(int(0.08 * self.sample_rate), n_samples // 2)
-        env = np.ones(n_samples, dtype=np.float32)
-        if apply_attack and attack > 0:
-            env[:attack] = np.linspace(0.0, 1.0, attack, dtype=np.float32)
-        if apply_release and release > 0:
-            env[-release:] = np.linspace(1.0, 0.0, release, dtype=np.float32)
-
-        shaped = np.clip(wave * env * amp, -1.0, 1.0)
-
-        if apply_release:
-            tail = np.zeros(int(0.005 * self.sample_rate), dtype=np.float32)
-            shaped = np.concatenate([shaped, tail])
-
-        samples = np.ascontiguousarray(shaped * 32767, dtype=np.int16)
-        return pygame.mixer.Sound(samples)

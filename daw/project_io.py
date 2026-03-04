@@ -26,6 +26,9 @@ def _project_to_dict(project: Project) -> dict:
                 "instrument_name": track.instrument_name,
                 "waveform": track.waveform,
                 "volume": float(track.volume),
+                "pan": float(track.pan),
+                "muted": bool(track.muted),
+                "solo": bool(track.solo),
                 "notes": [
                     {
                         "start_tick": int(note.start_tick),
@@ -67,6 +70,9 @@ def _project_from_dict(data: dict) -> Project:
                 instrument_name=str(track_data.get("instrument_name", "Unknown")),
                 waveform=str(track_data.get("waveform", "square")),
                 volume=float(track_data.get("volume", 0.8)),
+                pan=float(track_data.get("pan", 0.0)),
+                muted=bool(track_data.get("muted", False)),
+                solo=bool(track_data.get("solo", False)),
                 notes=notes,
             )
         )
