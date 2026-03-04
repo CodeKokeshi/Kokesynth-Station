@@ -2180,6 +2180,15 @@ class MainWindow(QMainWindow):
             result = _gen(genre, loop_friendly=loop_mode,
                           bars_override=dialog.selected_bars())
 
+            # If user is in custom loop mode, ensure the loop is not shorter
+            # than the freshly generated song (prevents early "build-up only" loops).
+            if self.project.loop_mode == "custom" and self.project.custom_loop_ticks < result.total_ticks:
+                self.project.custom_loop_ticks = result.total_ticks
+                bars = max(1, int(result.total_ticks / (self.project.ticks_per_beat * 4)))
+                self.spin_loop_beats.blockSignals(True)
+                self.spin_loop_beats.setValue(bars)
+                self.spin_loop_beats.blockSignals(False)
+
             # Update BPM
             self.project.bpm = result.bpm
             self.spin_bpm.setValue(result.bpm)

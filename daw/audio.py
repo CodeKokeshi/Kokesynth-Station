@@ -329,7 +329,9 @@ class AudioEngine(QObject):
 
     def _loop_window(self) -> tuple[int, int]:
         if self.project.loop_mode == "timeline":
-            return 0, 256
+            # Keep legacy minimum timeline span, but don't truncate longer songs.
+            _, dyn_end = self._dynamic_loop_window()
+            return 0, max(256, dyn_end)
         if self.project.loop_mode == "custom":
             return 0, max(1, self.project.custom_loop_ticks)
         return self._dynamic_loop_window()

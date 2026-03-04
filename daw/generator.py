@@ -142,8 +142,13 @@ class GenreConfig:
     lead_rest_prob: float = 0.1     # probability of a rest instead of a note
 
     # Style variants
-    lead_style: str = "default"       # "default", "arpeggio_peaks", "question_answer"
-    bass_style: str = "default"       # "default", "waltz", "walking"
+    lead_style: str = "default"       # "default", "arpeggio_peaks", "question_answer", "gba_town"
+    bass_style: str = "default"       # "default", "waltz", "walking", "root_fifth"
+    harmony_style: str = "default"    # "default", "staccato"
+    drum_style: str = "default"       # "default", "gba_town"
+
+    # Harmony rhythm patterns (used when harmony_style != "default")
+    harmony_rhythm: list[list[tuple[int, int]]] = field(default_factory=list)
 
     # Per-track panning  (-1.0 left .. +1.0 right)
     lead_pan: float = 0.0
@@ -153,6 +158,9 @@ class GenreConfig:
 
     # Lead doubling: create a "sparkle" copy at low volume  (instrument_name, waveform, volume)
     lead_doubling: tuple[str, str, float] | None = None
+
+    # Swing: 0.0 = straight, 0.1 = 10% shuffle on 8th notes
+    swing: float = 0.0
 
     # Extra tracks beyond the standard Lead / Bass / Harmony / Drums
     extra_tracks: list[ExtraTrackConfig] = field(default_factory=list)
@@ -179,610 +187,375 @@ def _simple_rhythm(tpb: int, bpb: int, divisions: list[float],
 _TPB = 4  # default ticks per beat
 _BPB = 4  # 4/4 time
 
-def _genre_happy() -> GenreConfig:
-    return GenreConfig(
-        name="Happy",
-        bpm_range=(115, 140),
-        bars=8,
-        scale_choices=["major", "mixolydian", "pentatonic_major"],
-        progressions=[
-            # I – V – vi – IV  (most popular pop progression)
-            [(0, "maj"), (4, "maj"), (5, "min"), (3, "maj")] * 2,
-            # I – IV – V – V
-            [(0, "maj"), (3, "maj"), (4, "maj"), (4, "maj")] * 2,
-            # I – vi – IV – V
-            [(0, "maj"), (5, "min"), (3, "maj"), (4, "maj")] * 2,
-        ],
-        lead_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 3, 3.5],
-                           [0.5, 0.5, 0.5, 0.5, 1, 0.5, 0.5]),
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 2.5, 3],
-                           [1, 1, 0.5, 0.5, 1]),
-        ],
-        bass_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 2], [2, 2]),
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [1, 1, 1, 1]),
-        ],
-        drum_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [0.25, 0.25, 0.25, 0.25]),
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.25] * 8),
-        ],
-        lead_instrument=("NES Square", "square"),
-        bass_instrument=("Generic Triangle", "triangle"),
-        harmony_instrument=("Generic Pulse 25%", "pulse25"),
-        drum_instrument=("NES Noise", "noise"),
-        lead_vel=(90, 115),
-        lead_range=(60, 84),
-        bass_range=(36, 55),
-        lead_step_max=3,
-        lead_rest_prob=0.08,
-    )
 
+# ── Shared 32-bar Town progression builder ──────────────────────────
 
-def _genre_calm() -> GenreConfig:
-    return GenreConfig(
-        name="Calm",
-        bpm_range=(70, 95),
-        bars=8,
-        scale_choices=["major", "pentatonic_major", "mixolydian"],
-        progressions=[
-            # I – IV – I – V
-            [(0, "maj"), (3, "maj"), (0, "maj"), (4, "maj")] * 2,
-            # I – vi – IV – V
-            [(0, "maj"), (5, "min"), (3, "maj"), (4, "maj")] * 2,
-            # I – iii – vi – IV
-            [(0, "maj"), (2, "min"), (5, "min"), (3, "maj")] * 2,
-        ],
-        lead_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 2, 3], [2, 1, 1]),
-            _simple_rhythm(_TPB, _BPB, [0, 1.5, 3], [1.5, 1.5, 1]),
-        ],
-        bass_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0], [4]),
-            _simple_rhythm(_TPB, _BPB, [0, 2], [2, 2]),
-        ],
-        drum_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 2], [0.25, 0.25]),
-        ],
-        lead_instrument=("Generic Sine", "sine"),
-        bass_instrument=("Generic Triangle", "triangle"),
-        harmony_instrument=("Generic Sine", "sine"),
-        drum_instrument=("Generic Noise Drum", "noise"),
-        lead_vel=(60, 85),
-        bass_vel=(55, 75),
-        harmony_vel=(45, 65),
-        drum_vel=(40, 60),
-        lead_range=(60, 79),
-        bass_range=(40, 55),
-        lead_step_max=2,
-        lead_rest_prob=0.2,
-    )
+def _town_32bar_progression(vibe: str) -> list[tuple[int, str]]:
+    """Build a 32-bar chord progression for Town themes.
 
-
-def _genre_sad() -> GenreConfig:
-    return GenreConfig(
-        name="Sad",
-        bpm_range=(60, 85),
-        bars=8,
-        scale_choices=["natural_minor", "harmonic_minor", "dorian"],
-        progressions=[
-            # i – iv – v – i
-            [(0, "min"), (3, "min"), (4, "min"), (0, "min")] * 2,
-            # i – VI – III – VII
-            [(0, "min"), (5, "maj"), (2, "maj"), (6, "maj")] * 2,
-            # i – iv – VI – V
-            [(0, "min"), (3, "min"), (5, "maj"), (4, "maj")] * 2,
-        ],
-        lead_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [1, 1, 1, 1]),
-            _simple_rhythm(_TPB, _BPB, [0, 2], [2, 2]),
-        ],
-        bass_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0], [4]),
-            _simple_rhythm(_TPB, _BPB, [0, 2], [2, 2]),
-        ],
-        drum_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 2], [0.25, 0.25]),
-        ],
-        lead_instrument=("Generic Sine", "sine"),
-        bass_instrument=("Generic Triangle", "triangle"),
-        harmony_instrument=("Generic Saw", "sawtooth"),
-        drum_instrument=("Generic Noise Drum", "noise"),
-        lead_vel=(65, 90),
-        bass_vel=(60, 80),
-        harmony_vel=(50, 70),
-        drum_vel=(45, 65),
-        lead_range=(55, 79),
-        bass_range=(36, 52),
-        lead_step_max=3,
-        lead_rest_prob=0.15,
-    )
-
-
-def _genre_horror() -> GenreConfig:
-    return GenreConfig(
-        name="Horror",
-        bpm_range=(75, 110),
-        bars=8,
-        scale_choices=["phrygian", "harmonic_minor", "diminished", "chromatic"],
-        progressions=[
-            # i – bII – i – v
-            [(0, "min"), (1, "maj"), (0, "min"), (4, "dim")] * 2,
-            # i – bVI – bVII – i
-            [(0, "min"), (5, "maj"), (6, "maj"), (0, "min")] * 2,
-            # i – iv – bII – i
-            [(0, "min"), (3, "min"), (1, "maj"), (0, "min")] * 2,
-            # tritone-heavy: i – bV – iv – i
-            [(0, "dim"), (6, "dim"), (3, "min"), (0, "dim")] * 2,
-        ],
-        lead_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1.5, 3], [1.5, 1.5, 1]),
-            _simple_rhythm(_TPB, _BPB, [0, 2, 3.5], [2, 1.5, 0.5]),
-        ],
-        bass_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0], [4]),
-            _simple_rhythm(_TPB, _BPB, [0, 3], [3, 1]),
-        ],
-        drum_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1.5, 3], [0.25, 0.25, 0.25]),
-            _simple_rhythm(_TPB, _BPB, [0], [0.25]),  # sparse single hit
-        ],
-        lead_instrument=("Generic Saw", "sawtooth"),
-        bass_instrument=("Generic Sine", "sine"),
-        harmony_instrument=("Generic Pulse 25%", "pulse25"),
-        drum_instrument=("Generic Noise Drum", "noise"),
-        lead_vel=(70, 100),
-        bass_vel=(60, 85),
-        harmony_vel=(40, 65),
-        drum_vel=(50, 80),
-        lead_range=(48, 76),
-        bass_range=(30, 50),
-        lead_step_max=5,
-        lead_rest_prob=0.25,
-    )
-
-
-def _genre_epic() -> GenreConfig:
-    return GenreConfig(
-        name="Epic",
-        bpm_range=(125, 160),
-        bars=8,
-        scale_choices=["natural_minor", "harmonic_minor", "dorian"],
-        progressions=[
-            # i – III – VII – VI  (epic cinematic)
-            [(0, "min"), (2, "maj"), (6, "maj"), (5, "maj")] * 2,
-            # i – iv – VII – III
-            [(0, "min"), (3, "min"), (6, "maj"), (2, "maj")] * 2,
-            # i – VI – III – VII
-            [(0, "min"), (5, "maj"), (2, "maj"), (6, "maj")] * 2,
-        ],
-        lead_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 2, 2.5, 3],
-                           [0.5, 0.5, 1, 0.5, 0.5, 1]),
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3],
-                           [1, 1, 1, 1]),
-        ],
-        bass_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [1, 1, 1, 1]),
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.5] * 8),
-        ],
-        drum_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.25] * 8),
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [0.25, 0.25, 0.25, 0.25]),
-        ],
-        lead_instrument=("Generic Saw", "sawtooth"),
-        bass_instrument=("Generic Square", "square"),
-        harmony_instrument=("NES Pulse 25%", "pulse25"),
-        drum_instrument=("NES Noise", "noise"),
-        lead_vel=(95, 120),
-        bass_vel=(85, 110),
-        harmony_vel=(70, 95),
-        drum_vel=(95, 127),
-        lead_range=(55, 84),
-        bass_range=(33, 52),
-        lead_step_max=4,
-        lead_rest_prob=0.05,
-    )
-
-
-def _genre_action() -> GenreConfig:
-    return GenreConfig(
-        name="Action",
-        bpm_range=(135, 170),
-        bars=8,
-        scale_choices=["natural_minor", "dorian", "blues", "pentatonic_minor"],
-        progressions=[
-            # i – iv – i – VII
-            [(0, "min"), (3, "min"), (0, "min"), (6, "maj")] * 2,
-            # i – III – VII – iv
-            [(0, "min"), (2, "maj"), (6, "maj"), (3, "min")] * 2,
-            # power-chord feel: i – v – iv – i
-            [(0, "min"), (4, "min"), (3, "min"), (0, "min")] * 2,
-        ],
-        lead_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 2, 2.5, 3],
-                           [0.5, 0.5, 1, 0.5, 0.5, 1]),
-        ],
-        bass_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.5] * 8),
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [1, 1, 1, 1]),
-        ],
-        drum_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.25] * 8),
-        ],
-        lead_instrument=("NES Square", "square"),
-        bass_instrument=("Generic Saw", "sawtooth"),
-        harmony_instrument=("Generic Square", "square"),
-        drum_instrument=("NES Noise", "noise"),
-        lead_vel=(90, 120),
-        bass_vel=(85, 110),
-        harmony_vel=(65, 90),
-        drum_vel=(100, 127),
-        lead_range=(55, 84),
-        bass_range=(33, 52),
-        lead_step_max=4,
-        lead_rest_prob=0.03,
-    )
-
-
-def _genre_retro() -> GenreConfig:
-    return GenreConfig(
-        name="Retro / Chiptune",
-        bpm_range=(120, 155),
-        bars=8,
-        scale_choices=["major", "pentatonic_major", "pentatonic_minor", "blues"],
-        progressions=[
-            # I – IV – V – I  (classic 8-bit)
-            [(0, "maj"), (3, "maj"), (4, "maj"), (0, "maj")] * 2,
-            # I – vi – IV – V
-            [(0, "maj"), (5, "min"), (3, "maj"), (4, "maj")] * 2,
-            # I – III – IV – iv  (Mario-esque)
-            [(0, "maj"), (2, "maj"), (3, "maj"), (3, "min")] * 2,
-        ],
-        lead_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 3, 3.5],
-                           [0.5, 0.5, 0.5, 0.5, 1, 0.5, 0.5]),
-            _simple_rhythm(_TPB, _BPB, [0, 1, 1.5, 2, 3],
-                           [1, 0.5, 0.5, 1, 1]),
-        ],
-        bass_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [1, 1, 1, 1]),
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.5] * 8),
-        ],
-        drum_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [0.25, 0.25, 0.25, 0.25]),
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.25] * 8),
-        ],
-        lead_instrument=("NES Square", "square"),
-        bass_instrument=("NES Triangle", "triangle"),
-        harmony_instrument=("NES Pulse 25%", "pulse25"),
-        drum_instrument=("NES Noise", "noise"),
-        lead_vel=(90, 115),
-        bass_vel=(80, 100),
-        harmony_vel=(65, 85),
-        drum_vel=(85, 110),
-        lead_range=(60, 84),
-        bass_range=(36, 55),
-        lead_step_max=3,
-        lead_rest_prob=0.07,
-    )
-
-
-def _genre_mystery() -> GenreConfig:
-    return GenreConfig(
-        name="Mystery",
-        bpm_range=(80, 110),
-        bars=8,
-        scale_choices=["whole_tone", "diminished", "harmonic_minor", "phrygian"],
-        progressions=[
-            # ambiguous movement
-            [(0, "maj7"), (1, "min"), (5, "dim"), (0, "maj7")] * 2,
-            [(0, "min"), (2, "dim"), (5, "maj"), (6, "dim")] * 2,
-            [(0, "sus4"), (3, "min"), (1, "maj"), (0, "sus4")] * 2,
-        ],
-        lead_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1.5, 3], [1.5, 1.5, 1]),
-            _simple_rhythm(_TPB, _BPB, [0, 2, 3], [2, 1, 1]),
-        ],
-        bass_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 2], [2, 2]),
-            _simple_rhythm(_TPB, _BPB, [0], [4]),
-        ],
-        drum_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 2.5], [0.25, 0.25]),
-            _simple_rhythm(_TPB, _BPB, [0], [0.25]),
-        ],
-        lead_instrument=("Generic Sine", "sine"),
-        bass_instrument=("Generic Triangle", "triangle"),
-        harmony_instrument=("Gameboy Pulse 12.5%", "pulse12"),
-        drum_instrument=("Generic Noise Drum", "noise"),
-        lead_vel=(55, 80),
-        bass_vel=(50, 70),
-        harmony_vel=(40, 60),
-        drum_vel=(40, 65),
-        lead_range=(52, 79),
-        bass_range=(36, 52),
-        lead_step_max=5,
-        lead_rest_prob=0.3,
-    )
-
-
-def _genre_boss_battle() -> GenreConfig:
-    return GenreConfig(
-        name="Boss Battle",
-        bpm_range=(150, 180),
-        bars=8,
-        scale_choices=["harmonic_minor", "phrygian", "natural_minor"],
-        progressions=[
-            # i – bII – iv – V  (tension-heavy)
-            [(0, "min"), (1, "maj"), (3, "min"), (4, "maj")] * 2,
-            # i – bVII – bVI – V  (Andalusian cadence)
-            [(0, "min"), (6, "maj"), (5, "maj"), (4, "maj")] * 2,
-            # i – iv – bVI – bVII
-            [(0, "min"), (3, "min"), (5, "maj"), (6, "maj")] * 2,
-        ],
-        lead_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 0.25, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.25, 0.25, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.5] * 8),
-        ],
-        bass_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.5] * 8),
-        ],
-        drum_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75,
-                                         2, 2.25, 2.5, 2.75, 3, 3.25, 3.5, 3.75],
-                           [0.25] * 16),
-        ],
-        lead_instrument=("Generic Saw", "sawtooth"),
-        bass_instrument=("NES Square", "square"),
-        harmony_instrument=("Generic Pulse 25%", "pulse25"),
-        drum_instrument=("NES Noise", "noise"),
-        lead_vel=(100, 127),
-        bass_vel=(90, 115),
-        harmony_vel=(75, 100),
-        drum_vel=(100, 127),
-        lead_range=(55, 88),
-        bass_range=(30, 52),
-        lead_step_max=5,
-        lead_rest_prob=0.02,
-    )
-
-
-def _genre_town() -> GenreConfig:
-    """Town – cozy starting-town feel (Pokemon-style).
-
-    Randomly picks one of three internal techniques each generation:
-    - Pallet style: bright diatonic I-IV-V, arpeggiated-peak melody
-    - Littleroot style: secondary dominants, question-answer melody, waltz bass
-    - Azalea style: maj7/add9 jazz chords, walking bass, trumpet lead
+    *vibe* is one of ``"inland"`` or ``"island"``.
     """
-    style = random.choice(["pallet", "littleroot", "azalea"])
+    cadence_v = [(4, "maj")]
+    cadence_sus = [(4, "sus4")]
 
-    if style == "pallet":
-        return GenreConfig(
-            name="Town",
-            bpm_range=(95, 110),
-            bars=8,
-            root_choices=[0, 7],                       # C or G Major
-            scale_choices=["major"],
-            progressions=[
-                # I – IV – V – I
-                [(0, "maj"), (3, "maj"), (4, "maj"), (0, "maj")] * 2,
-                # I – IV – V – V
-                [(0, "maj"), (3, "maj"), (4, "maj"), (4, "maj")] * 2,
-                # I – vi – ii – V
-                [(0, "maj"), (5, "min"), (1, "min"), (4, "maj")] * 2,
-                # I – IV – vi – V
-                [(0, "maj"), (3, "maj"), (5, "min"), (4, "maj")] * 2,
-            ],
-            lead_rhythm=[
-                _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 2, 2.5, 3],
-                               [0.5, 0.5, 1, 0.5, 0.5, 1]),
-                _simple_rhythm(_TPB, _BPB, [0, 1, 1.5, 2, 3, 3.5],
-                               [1, 0.5, 0.5, 1, 0.5, 0.5]),
-            ],
-            bass_rhythm=[
-                _simple_rhythm(_TPB, _BPB, [0, 2], [2, 2]),
-                _simple_rhythm(_TPB, _BPB, [0], [4]),
-            ],
-            drum_rhythm=[
-                _simple_rhythm(_TPB, _BPB, [0, 2], [0.25, 0.25]),
-                _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3],
-                               [0.25, 0.25, 0.25, 0.25]),
-            ],
-            lead_instrument=("SNES Flute", "sine"),
-            bass_instrument=("SNES Acoustic", "triangle"),
-            harmony_instrument=("NES Square", "square"),
-            drum_instrument=("NES Noise", "noise"),
-            lead_vel=(75, 100),
-            bass_vel=(65, 85),
-            harmony_vel=(50, 70),
-            drum_vel=(40, 60),
-            lead_mix_range=(0.72, 0.90),
-            bass_mix_range=(0.55, 0.75),
-            harmony_mix_range=(0.40, 0.60),
-            drum_mix_range=(0.30, 0.50),
-            lead_range=(60, 84),
-            bass_range=(36, 55),
-            harmony_range=(48, 72),
-            lead_step_max=3,
-            lead_rest_prob=0.10,
-            lead_style="arpeggio_peaks",
-            extra_tracks=[
-                ExtraTrackConfig(
-                    role="Counter Melody",
-                    gen_type="counter_melody",
-                    instrument=("SNES Harp", "sine"),
-                    vel=(55, 75),
-                    pitch_range=(55, 76),
-                    mix_range=(0.35, 0.55),
-                    rest_prob=0.35,
-                    step_max=2,
-                ),
-            ],
-        )
+    if vibe == "island":
+        sea = [(0, "maj"), (6, "maj"), (3, "maj"), (0, "maj")]
+        island = [(0, "maj"), (3, "maj"), (6, "maj"), (0, "maj")]
+        bounce = [(0, "maj"), (4, "maj"), (3, "maj"), (0, "maj")]
 
-    if style == "littleroot":
-        return GenreConfig(
-            name="Town",
-            bpm_range=(100, 115),
-            bars=8,
-            scale_choices=["major"],
-            progressions=[
-                # I → V/V → V → I  (secondary dominant)
-                [(0, "maj"), (1, "7"), (4, "maj"), (0, "maj")] * 2,
-                # I → vi → V/V → V
-                [(0, "maj"), (5, "min"), (1, "7"), (4, "maj")] * 2,
-                # I → IV → V/V → V
-                [(0, "maj"), (3, "maj"), (1, "7"), (4, "maj")] * 2,
-                # I → ii → V → I
-                [(0, "maj"), (1, "min"), (4, "maj"), (0, "maj")] * 2,
-            ],
-            lead_rhythm=[
-                _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [1, 1, 1, 1]),
-                _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 2, 3],
-                               [0.5, 0.5, 1, 1, 1]),
-            ],
-            bass_rhythm=[
-                _simple_rhythm(_TPB, _BPB, [0, 2, 3], [2, 1, 1]),
-            ],
-            drum_rhythm=[
-                _simple_rhythm(_TPB, _BPB, [0, 2, 3],
-                               [0.25, 0.25, 0.25]),
-                _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3],
-                               [0.25, 0.25, 0.25, 0.25]),
-            ],
-            lead_instrument=("SNES Piano", "pulse25"),
-            bass_instrument=("SNES Acoustic", "triangle"),
-            harmony_instrument=("SNES Strings", "sawtooth"),
-            drum_instrument=("NES Noise", "noise"),
-            lead_vel=(78, 100),
-            bass_vel=(65, 85),
-            harmony_vel=(45, 65),
-            drum_vel=(38, 58),
-            lead_mix_range=(0.70, 0.88),
-            bass_mix_range=(0.58, 0.78),
-            harmony_mix_range=(0.38, 0.55),
-            drum_mix_range=(0.28, 0.48),
-            lead_range=(60, 84),
-            bass_range=(36, 55),
-            harmony_range=(48, 72),
-            lead_step_max=3,
-            lead_rest_prob=0.08,
-            lead_style="question_answer",
-            bass_style="waltz",
-            extra_tracks=[
-                ExtraTrackConfig(
-                    role="Strings Pad",
-                    gen_type="pad",
-                    instrument=("SNES Strings", "sawtooth"),
-                    vel=(35, 55),
-                    pitch_range=(48, 72),
-                    mix_range=(0.25, 0.42),
-                    rest_prob=0.1,
-                ),
-                ExtraTrackConfig(
-                    role="Counter Melody",
-                    gen_type="counter_melody",
-                    instrument=("SNES Flute", "sine"),
-                    vel=(55, 75),
-                    pitch_range=(60, 79),
-                    mix_range=(0.35, 0.52),
-                    rest_prob=0.40,
-                    step_max=2,
-                ),
-            ],
-        )
+        intro = [(0, "maj")] * 4
+        head_a = random.choice([sea, island])
+        head_b = random.choice([bounce, sea])
+        dev_a = [(3, "maj"), (6, "maj"), (0, "maj"), (4, "maj")]
+        dev_b = [(0, "maj"), (6, "maj"), (3, "maj"), (4, "7")]
+        clim_a = random.choice([sea, bounce])
+        clim_b = [(6, "maj"), (3, "maj"), (4, "7"), (0, "maj")]
+    else:  # inland
+        cozy = [(0, "maj"), (1, "7"), (4, "7"), (0, "maj")]
+        soft = [(0, "maj"), (5, "min"), (1, "min"), (4, "maj")]
+        walk = [(0, "maj"), (3, "maj"), (4, "maj"), (0, "maj")]
 
-    # style == "azalea"
+        intro = [(0, "maj")] * 4
+        head_a = random.choice([cozy, walk])
+        head_b = random.choice([soft, cozy])
+        dev_a = [(5, "min"), (3, "maj"), (1, "min"), (4, "7")]
+        dev_b = [(0, "maj"), (5, "min"), (3, "maj"), (4, "maj")]
+        clim_a = [(0, "maj"), (1, "7"), (4, "7"), (0, "maj")]
+        clim_b = [(5, "min"), (3, "maj"), (1, "7"), (4, "7")]
+
+    reset = [(0, "maj"), (0, "maj")] + random.choice([cadence_v, cadence_sus]) * 2
+    return intro + head_a + head_b + dev_a + dev_b + clim_a + clim_b + reset
+
+
+# ── Standard rhythm presets for Town themes ─────────────────────────
+
+_TOWN_LEAD_RHYTHMS = [
+    _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 2, 2.5, 3],
+                   [0.5, 0.5, 1, 0.5, 0.5, 1]),
+    _simple_rhythm(_TPB, _BPB, [0, 1, 1.5, 2, 3],
+                   [1, 0.5, 0.5, 1, 1]),
+]
+
+_TOWN_BASS_332 = [
+    _simple_rhythm(_TPB, _BPB, [0, 1.5, 3], [1.5, 1.5, 1]),
+]
+
+_TOWN_DRUM_8THS = [
+    _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
+                   [0.25] * 8),
+]
+
+_TOWN_HARMONY_STACCATO = [
+    _simple_rhythm(_TPB, _BPB, [0, 1.5, 3], [0.5, 0.5, 0.5]),
+]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Generic Town  —  plain waveforms, 4–5 tracks, works-anywhere default
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _genre_generic_town() -> GenreConfig:
+    """Generic Town — clean waveforms, no specific console family.
+
+    Uses Generic + NES instruments for a simple but pleasant sound.
+    Lighter arrangement: 4 core tracks + optional pad.
+    """
+    vibe = random.choice(["inland", "inland", "inland", "island"])
+    bpm_range = (90, 108) if vibe == "inland" else (108, 118)
+    scale_choices = ["major"] if vibe == "inland" else ["mixolydian"]
+    root_choices = [0, 2, 5, 7] if vibe == "inland" else [0, 5, 7]
+
+    prog_32 = _town_32bar_progression(vibe)
+
     return GenreConfig(
-        name="Town",
-        bpm_range=(90, 108),
-        bars=8,
-        scale_choices=["major", "dorian"],
-        progressions=[
-            # Imaj7 → vim7 → iim7 → V7
-            [(0, "maj7"), (5, "m7"), (1, "m7"), (4, "7")] * 2,
-            # Imaj7 → IVmaj7 → iim7 → V7
-            [(0, "maj7"), (3, "maj7"), (1, "m7"), (4, "7")] * 2,
-            # Iadd9 → IIIm7 → vim7 → IVmaj7
-            [(0, "add9"), (2, "m7"), (5, "m7"), (3, "maj7")] * 2,
-            # Imaj7 → vim7 → IV → V7
-            [(0, "maj7"), (5, "m7"), (3, "maj"), (4, "7")] * 2,
-        ],
-        lead_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1, 1.5, 2, 3, 3.5],
-                           [1, 0.5, 0.5, 1, 0.5, 0.5]),
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 2, 2.5, 3],
-                           [0.5, 0.5, 1, 0.5, 0.5, 1]),
-        ],
-        bass_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3], [1, 1, 1, 1]),
-        ],
-        drum_rhythm=[
-            _simple_rhythm(_TPB, _BPB, [0, 1, 2, 3],
-                           [0.25, 0.25, 0.25, 0.25]),
-            _simple_rhythm(_TPB, _BPB, [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
-                           [0.25] * 8),
-        ],
-        lead_instrument=("SNES Trumpet", "sawtooth"),
-        bass_instrument=("SNES Slap Bass", "square"),
-        harmony_instrument=("SNES Piano", "pulse25"),
-        drum_instrument=("NES Noise", "noise"),
-        lead_vel=(72, 95),
-        bass_vel=(70, 90),
-        harmony_vel=(45, 65),
-        drum_vel=(42, 62),
-        lead_mix_range=(0.68, 0.88),
-        bass_mix_range=(0.60, 0.80),
-        harmony_mix_range=(0.38, 0.58),
-        drum_mix_range=(0.32, 0.52),
-        lead_range=(55, 79),
+        name="Generic Town",
+        bpm_range=bpm_range,
+        bars=32,
+        root_choices=root_choices,
+        scale_choices=scale_choices,
+        progressions=[prog_32],
+
+        lead_rhythm=_TOWN_LEAD_RHYTHMS,
+        bass_rhythm=_TOWN_BASS_332,
+        drum_rhythm=_TOWN_DRUM_8THS,
+
+        lead_instrument=random.choice([
+            ("Generic Sine", "sine"),
+            ("Generic Triangle", "triangle"),
+        ]),
+        bass_instrument=("Generic Triangle", "triangle"),
+        harmony_instrument=("Generic Pulse 25%", "pulse25"),
+        drum_instrument=("Generic Noise Drum", "noise"),
+
+        lead_vel=(82, 102),
+        bass_vel=(88, 96),
+        harmony_vel=(70, 92),
+        drum_vel=(35, 52),
+        lead_mix_range=(0.72, 0.88),
+        bass_mix_range=(0.60, 0.76),
+        harmony_mix_range=(0.42, 0.58),
+        drum_mix_range=(0.26, 0.38),
+        lead_range=(60, 84),
         bass_range=(36, 55),
         harmony_range=(48, 72),
-        lead_step_max=4,
-        lead_rest_prob=0.12,
-        bass_style="walking",
+        drum_pitches=[38, 42],           # snare + hi-hat only
+        lead_step_max=3,
+        lead_rest_prob=0.10,
+        lead_style="gba_town",           # reuse section-aware melody
+        bass_style="root_fifth",
+        harmony_style="staccato",
+        drum_style="gba_town",
+        harmony_rhythm=_TOWN_HARMONY_STACCATO,
+        swing=0.08,
+
+        # Lead doubling with NES square sparkle
+        lead_doubling=("NES Square", "square", 0.15),
+
         extra_tracks=[
             ExtraTrackConfig(
-                role="Counter Melody",
-                gen_type="counter_melody",
-                instrument=("SNES Flute", "sine"),
-                vel=(50, 70),
-                pitch_range=(60, 79),
-                mix_range=(0.30, 0.50),
-                rest_prob=0.35,
-                step_max=3,
+                role="Pad",
+                gen_type="pad",
+                instrument=("Generic Saw", "sawtooth"),
+                vel=(38, 55),
+                pitch_range=(48, 72),
+                mix_range=(0.25, 0.40),
+                rest_prob=0.10,
             ),
         ],
     )
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# GBA Town  —  authentic Sappy-engine Pokémon town theme
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _genre_gba_town() -> GenreConfig:
+    """GBA Town — authentic Pokémon-style town theme (Sappy / m4a engine).
+
+    Full 32-bar structure with 6–8 tracks:
+    Lead, Bass, Harmony, Drums, Lead Sparkle, Strings Pad,
+    Counter Melody, and (inland only) Guitar Arpeggio.
+
+    Inland (Pallet/Littleroot/Azalea) or Island (Dewford/Slateport).
+    """
+    vibe = random.choice(["inland", "inland", "inland", "island"])
+    bpm_range = (95, 105) if vibe == "inland" else (110, 120)
+    scale_choices = ["major"] if vibe == "inland" else ["mixolydian"]
+    root_choices = [0, 2, 5, 7] if vibe == "inland" else [0, 5, 7]
+
+    prog_32 = _town_32bar_progression(vibe)
+
+    if vibe == "inland":
+        lead_inst = random.choice([("GBA Flute", "sine"), ("GBA Ocarina", "sine")])
+        counter_inst = random.choice([("GBA Vibraphone", "triangle"),
+                                       ("GBA Glockenspiel", "triangle")])
+    else:
+        lead_inst = random.choice([("GBA Muted Trumpet", "sawtooth"),
+                                    ("GBA Steel Drums", "triangle")])
+        counter_inst = ("GBA Vibraphone", "triangle")
+
+    extras = [
+        ExtraTrackConfig(
+            role="Strings Pad",
+            gen_type="pad",
+            instrument=("GBA Strings", "sawtooth"),
+            vel=(40, 60),
+            pitch_range=(48, 72),
+            mix_range=(0.30, 0.48),
+            rest_prob=0.08,
+            pan=0.30,
+        ),
+        ExtraTrackConfig(
+            role="Counter Melody",
+            gen_type="counter_melody",
+            instrument=counter_inst,
+            vel=(55, 75),
+            pitch_range=(60, 84),
+            mix_range=(0.32, 0.50),
+            rest_prob=0.38,
+            step_max=2,
+            pan=0.15 if vibe == "inland" else 0.20,
+        ),
+    ]
+
+    if vibe == "inland":
+        extras.append(ExtraTrackConfig(
+            role="Guitar Arpeggio",
+            gen_type="arpeggio",
+            instrument=("GBA Acoustic Guitar", "triangle"),
+            vel=(50, 70),
+            pitch_range=(48, 72),
+            mix_range=(0.30, 0.48),
+            rest_prob=0.15,
+            pan=-0.15,
+        ))
+
+    return GenreConfig(
+        name="GBA Town",
+        bpm_range=bpm_range,
+        bars=32,
+        root_choices=root_choices,
+        scale_choices=scale_choices,
+        progressions=[prog_32],
+
+        lead_rhythm=_TOWN_LEAD_RHYTHMS,
+        bass_rhythm=_TOWN_BASS_332,
+        drum_rhythm=_TOWN_DRUM_8THS,
+
+        lead_instrument=lead_inst,
+        bass_instrument=random.choice([("GBA Fretless Bass", "triangle"),
+                                       ("GBA Slap Bass", "square")]),
+        harmony_instrument=("GBA Piano", "pulse25"),
+        drum_instrument=("GBA Light Kit", "noise"),
+
+        lead_vel=(85, 105),
+        bass_vel=(92, 98),
+        harmony_vel=(80, 105) if vibe == "inland" else (78, 98),
+        drum_vel=(35, 55) if vibe == "inland" else (40, 58),
+        lead_mix_range=(0.75, 0.90),
+        bass_mix_range=(0.62, 0.78),
+        harmony_mix_range=(0.45, 0.62),
+        drum_mix_range=(0.28, 0.42),
+        lead_range=(60, 84),
+        bass_range=(36, 55),
+        harmony_range=(48, 72),
+        drum_pitches=[38, 42],
+        lead_step_max=3,
+        lead_rest_prob=0.08 if vibe == "inland" else 0.06,
+        lead_style="gba_town",
+        bass_style="root_fifth",
+        harmony_style="staccato",
+        drum_style="gba_town",
+        harmony_rhythm=_TOWN_HARMONY_STACCATO,
+
+        lead_pan=0.0,
+        bass_pan=0.0,
+        harmony_pan=-0.30,
+        drum_pan=0.0,
+
+        lead_doubling=("NES Square", "square", 0.18),
+        swing=0.10,
+
+        extra_tracks=extras,
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SNES Town  —  warm 16-bit RPG town (FF / Chrono Trigger / EarthBound)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _genre_snes_town() -> GenreConfig:
+    """SNES Town — warm 16-bit RPG feel (Final Fantasy / Chrono Trigger).
+
+    Rich orchestration using SNES instruments: Flute, Piano, Strings,
+    Harp arpeggios, Marimba accents, and optional Trumpet counter-melody.
+    32-bar structure with section awareness.
+    """
+    vibe = random.choice(["inland", "inland", "inland", "island"])
+    bpm_range = (88, 100) if vibe == "inland" else (104, 115)
+    scale_choices = ["major", "dorian"] if vibe == "inland" else ["mixolydian"]
+    root_choices = [0, 2, 5, 7] if vibe == "inland" else [0, 5, 7]
+
+    prog_32 = _town_32bar_progression(vibe)
+
+    lead_inst = random.choice([
+        ("SNES Flute", "sine"),
+        ("SNES Trumpet", "sawtooth"),
+    ])
+
+    extras = [
+        # Strings pad (warm sustain)
+        ExtraTrackConfig(
+            role="Strings Pad",
+            gen_type="pad",
+            instrument=("SNES Strings", "sawtooth"),
+            vel=(42, 62),
+            pitch_range=(48, 72),
+            mix_range=(0.32, 0.50),
+            rest_prob=0.06,
+            pan=0.25,
+        ),
+        # Harp arpeggios
+        ExtraTrackConfig(
+            role="Harp Arpeggio",
+            gen_type="arpeggio",
+            instrument=("SNES Harp", "sine"),
+            vel=(48, 68),
+            pitch_range=(48, 72),
+            mix_range=(0.28, 0.44),
+            rest_prob=0.12,
+            pan=-0.20,
+        ),
+        # Marimba counter / twinkle
+        ExtraTrackConfig(
+            role="Marimba Counter",
+            gen_type="counter_melody",
+            instrument=("SNES Marimba", "triangle"),
+            vel=(50, 70),
+            pitch_range=(60, 84),
+            mix_range=(0.28, 0.42),
+            rest_prob=0.40,
+            step_max=2,
+            pan=0.15,
+        ),
+    ]
+
+    return GenreConfig(
+        name="SNES Town",
+        bpm_range=bpm_range,
+        bars=32,
+        root_choices=root_choices,
+        scale_choices=scale_choices,
+        progressions=[prog_32],
+
+        lead_rhythm=_TOWN_LEAD_RHYTHMS,
+        bass_rhythm=_TOWN_BASS_332,
+        drum_rhythm=_TOWN_DRUM_8THS,
+
+        lead_instrument=lead_inst,
+        bass_instrument=("SNES Slap Bass", "square"),
+        harmony_instrument=("SNES Piano", "pulse25"),
+        drum_instrument=("SNES Kit", "noise"),
+
+        lead_vel=(82, 104),
+        bass_vel=(90, 98),
+        harmony_vel=(75, 100),
+        drum_vel=(32, 52),
+        lead_mix_range=(0.72, 0.88),
+        bass_mix_range=(0.60, 0.76),
+        harmony_mix_range=(0.44, 0.60),
+        drum_mix_range=(0.26, 0.40),
+        lead_range=(60, 84),
+        bass_range=(36, 55),
+        harmony_range=(48, 72),
+        drum_pitches=[38, 42],
+        lead_step_max=3,
+        lead_rest_prob=0.08,
+        lead_style="gba_town",
+        bass_style="root_fifth",
+        harmony_style="staccato",
+        drum_style="gba_town",
+        harmony_rhythm=_TOWN_HARMONY_STACCATO,
+
+        lead_pan=0.0,
+        bass_pan=0.0,
+        harmony_pan=-0.25,
+        drum_pan=0.0,
+
+        # SNES doubling: flute + triangle sparkle
+        lead_doubling=("SNES Acoustic", "triangle", 0.16),
+        swing=0.08,
+
+        extra_tracks=extras,
+    )
+
+
 # ── Registry of all genres ──────────────────────────────────────────
 
-GENRE_BUILDERS: dict[str, type(lambda: None)] = {
-    "Happy":            _genre_happy,
-    "Calm":             _genre_calm,
-    "Sad":              _genre_sad,
-    "Horror":           _genre_horror,
-    "Epic":             _genre_epic,
-    "Action":           _genre_action,
-    "Retro / Chiptune": _genre_retro,
-    "Mystery":          _genre_mystery,
-    "Boss Battle":      _genre_boss_battle,
-    "Town":             _genre_town,
+GENRE_BUILDERS: dict[str, callable] = {
+    "Generic Town":     _genre_generic_town,
+    "GBA Town":         _genre_gba_town,
+    "SNES Town":        _genre_snes_town,
 }
 
 GENRE_NAMES: list[str] = list(GENRE_BUILDERS.keys())
@@ -956,6 +729,20 @@ def generate_music(genre_name: str, *,
             pan=extra_cfg.pan,
         ))
 
+    # ── Swing / shuffle post-processing ────────────────────────────────
+    if cfg.swing > 0:
+        # Shift every off-beat 8th note forward by (swing * half-8th-note)
+        eighth = tpb // 2 or 1           # 8th-note duration in ticks
+        shift = max(1, int(eighth * cfg.swing))
+        for t in tracks:
+            for n in t.notes:
+                # Detect off-beat 8th positions (those at odd multiples of eighth)
+                pos_in_bar = n.start_tick % bar_ticks
+                if eighth > 0 and (pos_in_bar // eighth) % 2 == 1:
+                    n.start_tick += shift
+                    # Shorten to avoid overlap (never shorter than 1 tick)
+                    n.length_tick = max(1, n.length_tick - shift)
+
     # ── Loop-friendly post-processing ───────────────────────────────
     if loop_friendly:
         from daw.theory import fix_loops as _fix_loops
@@ -1003,6 +790,7 @@ def _generate_lead(cfg: GenreConfig, scale: list[int],
 
     # Start near the middle
     current_idx = len(lead_scale) // 2
+    prev_pitch: int | None = None          # for velocity ramps (gba_town)
 
     rhythm_patterns = cfg.lead_rhythm or [
         _simple_rhythm(tpb, bpb, [0, 1, 2, 3], [1, 1, 1, 1])
@@ -1028,6 +816,48 @@ def _generate_lead(cfg: GenreConfig, scale: list[int],
                 current_idx = max(0, int(len(lead_scale) * 0.3)
                                   + random.randint(-2, 2))
             step_bias = 1 if phrase_bar < 2 else -1
+        elif cfg.lead_style == "gba_town":
+            # ── GBA Town: 32-bar section-aware melody ──────────────
+            # Intro (0-3): silence — no melody
+            # Head (4-11): call/response, lower-mid register
+            # Development (12-19): upper register, ascending bias
+            # Climax (20-27): highest energy, widest range
+            # Reset (28-31): sparse descending, fading out
+
+            if bar_idx < 4:
+                continue                     # Intro: no melody at all
+            if bar_idx >= 30:
+                continue                     # Last 2 bars of Reset: silence
+
+            # Determine section & register target
+            if bar_idx < 12:                 # Head
+                register_target = 0.35
+                step_bias = 0
+            elif bar_idx < 20:               # Development
+                register_target = 0.65
+                step_bias = 1                # ascending bias
+            elif bar_idx < 28:               # Climax
+                register_target = 0.80
+                half = (bar_idx - 20) < 4
+                step_bias = 1 if half else -1
+            else:                            # Reset (bars 28-29)
+                register_target = 0.30
+                step_bias = -1
+
+            # Jump register at section boundaries
+            if bar_idx in (4, 12, 20, 28):
+                target_idx = int(len(lead_scale) * register_target)
+                current_idx = max(0, min(len(lead_scale) - 1,
+                                         target_idx + random.randint(-2, 2)))
+
+            # ── "Gap" rule: every other bar within each section is a
+            #    "response" / breathing bar — keep only 1-2 notes max.
+            section_start = (4 if bar_idx < 12 else
+                             12 if bar_idx < 20 else
+                             20 if bar_idx < 28 else 28)
+            if (bar_idx - section_start) % 2 == 1:
+                keep = random.randint(1, 2)
+                pattern = pattern[:keep]
 
         # Get chord tones for guidance
         idx_in_scale = degree % len(intervals)
@@ -1066,11 +896,22 @@ def _generate_lead(cfg: GenreConfig, scale: list[int],
 
             current_idx = candidate_idx
             vel = random.randint(*cfg.lead_vel)
+
+            # ── GBA Town velocity ramps: pitch direction → velocity ──
+            if cfg.lead_style == "gba_town" and prev_pitch is not None:
+                if candidate_note > prev_pitch:
+                    vel += random.randint(3, 5)      # ascending = crescendo
+                elif candidate_note < prev_pitch:
+                    vel -= random.randint(3, 5)      # descending = decrescendo
+                vel += random.randint(-5, 5)         # humanize ±5
+
+            prev_pitch = candidate_note
+
             notes.append(NoteEvent(
                 start_tick=bar_start + tick_off,
                 length_tick=length,
                 midi_note=candidate_note,
-                velocity=min(127, vel),
+                velocity=max(30, min(127, vel)),
             ))
 
     return notes
@@ -1154,6 +995,30 @@ def _generate_bass(cfg: GenreConfig, scale: list[int],
                                        bass_scale[interp], min(127, vel)))
             continue
 
+        if cfg.bass_style == "root_fifth":
+            # GBA Town bass: ONLY root & 5th, never chords.
+            # Follows the rhythm pattern (typically 3+3+2) and strictly
+            # alternates root ↔ fifth.  Section-aware for 32-bar Town:
+            #   Intro (0-3): play but softer, Reset (28-31): drop at bar 30.
+            is_intro = bar_idx < 4
+            if bar_idx >= 30:
+                continue                     # drop bass for last 2 bars
+
+            toggle = False                   # alternates root / fifth
+            for _note_idx, (tick_off, length) in enumerate(pattern):
+                midi = bass_root if not toggle else bass_fifth
+                toggle = not toggle
+                vel = random.randint(*cfg.bass_vel)
+                if is_intro:
+                    vel = max(30, vel - 12)  # softer in intro
+                notes.append(NoteEvent(
+                    start_tick=bar_start + tick_off,
+                    length_tick=length,
+                    midi_note=midi,
+                    velocity=max(30, min(127, vel)),
+                ))
+            continue
+
         for note_idx, (tick_off, length) in enumerate(pattern):
             # Alternate root and fifth with some randomness
             if note_idx == 0 or random.random() < 0.6:
@@ -1184,8 +1049,10 @@ def _generate_harmony(cfg: GenreConfig, scale: list[int],
     notes: list[NoteEvent] = []
     lo, hi = cfg.harmony_range
 
-    # Choose style: block chords or arpeggiated
+    # Choose style: block chords or arpeggiated (unless overridden)
     use_arpeggio = random.random() < 0.4
+
+    harmony_rhythm = cfg.harmony_rhythm or []
 
     for bar_idx, (degree, quality) in enumerate(chord_prog):
         bar_start = bar_idx * bar_ticks
@@ -1220,6 +1087,28 @@ def _generate_harmony(cfg: GenreConfig, scale: list[int],
             voicing = [chord_root]
 
         vel = random.randint(*cfg.harmony_vel)
+
+        # ── Staccato harmony (3+3+2 off-beat chords for GBA Town) ──
+        if cfg.harmony_style == "staccato" and harmony_rhythm:
+            # Section-aware for 32-bar Town:
+            #   Reset (bars 28-31): drop harmony at bar 30
+            if bar_idx >= 30:
+                continue
+            is_intro = bar_idx < 4
+            pattern = random.choice(harmony_rhythm)
+            for tick_off, length in pattern:
+                v = vel + random.randint(-5, 5)
+                if is_intro:
+                    v = max(30, v - 10)  # softer during intro
+                # Play short staccato chord stabs
+                for midi in voicing:
+                    notes.append(NoteEvent(
+                        start_tick=bar_start + tick_off,
+                        length_tick=length,
+                        midi_note=midi,
+                        velocity=max(30, min(127, v)),
+                    ))
+            continue
 
         if use_arpeggio:
             # Arpeggiate: spread notes across the bar
@@ -1297,6 +1186,61 @@ def _generate_drums(cfg: GenreConfig, bar_ticks: int,
         bar_start = bar_idx * bar_ticks
         pattern = random.choice(rhythm_patterns)
 
+        # ── GBA Town drums: section-aware, snare + hi-hat only ──────
+        if cfg.drum_style == "gba_town":
+            # Drop drums entirely in last 2 bars (reset tail)
+            if bar_idx >= 30:
+                continue
+            is_intro = bar_idx < 4
+            is_reset = bar_idx >= 28
+
+            # In Town themes only 2 pitches: snare (idx 0) + hi-hat (idx 1)
+            p_snare = pitches[0]
+            p_hihat = pitches[1] if len(pitches) > 1 else pitches[0]
+
+            for _note_idx, (tick_off, length) in enumerate(pattern):
+                beat_pos = tick_off / tpb
+
+                # Soft snare on beats 2 & 4 (backbeats)
+                if abs(beat_pos - 1.0) < 0.01 or abs(beat_pos - 3.0) < 0.01:
+                    midi = p_snare
+                else:
+                    # Everything else is hi-hat (closed, on 8th notes)
+                    midi = p_hihat
+
+                vel = random.randint(*cfg.drum_vel)
+                if is_intro:
+                    vel = max(25, vel - 15)       # very soft in intro
+                if is_reset:
+                    vel = max(25, vel - 8)        # tapering off
+
+                # Ghost notes on upbeats
+                if random.random() < 0.12:
+                    vel = max(25, vel - 18)
+
+                notes.append(NoteEvent(
+                    start_tick=bar_start + tick_off,
+                    length_tick=length,
+                    midi_note=midi,
+                    velocity=max(25, min(127, vel)),
+                ))
+
+            # Light snare fill right before reset (bars 27-28)
+            if bar_idx in (27, 28) and random.random() < 0.5:
+                fill_tick = bar_start + bar_ticks - tpb
+                for fi in range(random.randint(2, 3)):
+                    offset = fi * max(1, tpb // 4)
+                    if fill_tick + offset < bar_start + bar_ticks:
+                        notes.append(NoteEvent(
+                            start_tick=fill_tick + offset,
+                            length_tick=max(1, tpb // 4),
+                            midi_note=p_snare,
+                            velocity=max(25, min(127,
+                                         random.randint(*cfg.drum_vel))),
+                        ))
+            continue
+
+        # ── Default drum style ──────────────────────────────────────
         for note_idx, (tick_off, length) in enumerate(pattern):
             vel = random.randint(*cfg.drum_vel)
 

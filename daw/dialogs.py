@@ -669,10 +669,9 @@ class GenerateMusicDialog(QDialog):
 
         self.list_widget = QListWidget()
         _GENRE_ICONS = {
-            "Happy": "😊", "Calm": "🌿", "Sad": "😢",
-            "Horror": "👻", "Epic": "⚔️", "Action": "💥",
-            "Retro / Chiptune": "🕹️", "Mystery": "🔮",
-            "Boss Battle": "🐉", "Town": "🏡",
+            "Generic Town": "🏘️",
+            "GBA Town":     "🏡",
+            "SNES Town":    "🏰",
         }
         for name in GENRE_NAMES:
             icon = _GENRE_ICONS.get(name, "🎵")
@@ -680,6 +679,7 @@ class GenerateMusicDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, name)
             self.list_widget.addItem(item)
         self.list_widget.setCurrentRow(0)
+        self.list_widget.currentItemChanged.connect(self._on_genre_changed)
         self.list_widget.itemDoubleClicked.connect(lambda _: self.accept())
         layout.addWidget(self.list_widget)
 
@@ -726,6 +726,19 @@ class GenerateMusicDialog(QDialog):
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+    def _on_genre_changed(self, current, _previous):
+        """Apply sensible defaults per genre when user switches selection."""
+        if current is None:
+            return
+        genre = current.data(Qt.ItemDataRole.UserRole)
+        # All Town variants are 32-bar long-form by default.
+        if "Town" in genre:
+            if not self.radio_onetime.isChecked():
+                self.radio_onetime.setChecked(True)
+            idx = self.combo_length.findData(32)
+            if idx >= 0:
+                self.combo_length.setCurrentIndex(idx)
 
     def _update_length_choices(self):
         self.combo_length.clear()

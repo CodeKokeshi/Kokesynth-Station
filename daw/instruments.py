@@ -57,6 +57,8 @@ SYNTH_PRESETS: dict[str, SynthPreset] = {
                                    vibrato_rate=3.0, vibrato_depth=0.08, filter_cutoff=0.55),
     "SNES Marimba":   SynthPreset(attack=0.001, decay=0.18, sustain=0.15, release=0.12,
                                    filter_cutoff=0.60),
+    "SNES Kit":       SynthPreset(attack=0.001, decay=0.12, sustain=0.0,  release=0.04,
+                                   filter_cutoff=0.65),
 
     # --- GBA family (authentic Sappy / m4a engine character) ---
     "GBA Flute":       SynthPreset(attack=0.04,  decay=0.06, sustain=0.88, release=0.15,
@@ -113,6 +115,7 @@ INSTRUMENT_LIBRARY: list[dict[str, str]] = [
     {"name": "SNES Slap Bass", "waveform": "square", "family": "SNES"},
     {"name": "SNES Harp", "waveform": "sine", "family": "SNES"},
     {"name": "SNES Marimba", "waveform": "triangle", "family": "SNES"},
+    {"name": "SNES Kit", "waveform": "noise", "family": "SNES"},
     # GBA family (Sappy / m4a engine)
     {"name": "GBA Flute", "waveform": "sine", "family": "GBA"},
     {"name": "GBA Ocarina", "waveform": "sine", "family": "GBA"},
