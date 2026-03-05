@@ -734,9 +734,6 @@ class GenerateMusicDialog(QDialog):
         self.variant_list.currentItemChanged.connect(self._on_variant_changed)
         self.variant_list.itemDoubleClicked.connect(lambda _: self.accept())
 
-        # Select first category to populate the right panel
-        self.category_list.setCurrentRow(0)
-
         # ── Playback mode ─────────────────────────────────────────
         mode_label = QLabel("Playback mode")
         mode_label.setStyleSheet("font-size: 13px; font-weight: 600; margin-top: 6px;")
@@ -805,6 +802,9 @@ class GenerateMusicDialog(QDialog):
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+        # Select first category now that all widgets exist
+        self.category_list.setCurrentRow(0)
 
     # ── Category → populate variants ──────────────────────────────
     def _on_category_changed(self, current, _previous):
