@@ -1,0 +1,21 @@
+# Core application
+numpy==2.4.2
+PyQt6==6.10.2
+pygame-ce==2.5.6
+sounddevice==0.5.5
+
+# Audio transcription
+librosa==0.11.0
+soundfile==0.13.1
+
+# Sheet export
+matplotlib==3.10.8
+
+# Sheet reading / OMR
+music21==9.9.1
+oemer==0.1.8
+opencv-python-headless==4.13.0.92
+PyMuPDF==1.27.1
+
+# oemer declares its own onnxruntime package dependency.
+# Do not pin onnxruntime separately here unless you want to override oemer's choice.
